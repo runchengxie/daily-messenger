@@ -57,6 +57,23 @@ repo/
 
     评分步骤会写入 `state/done_YYYY-MM-DD` 文件。删除该文件，或运行 `python scoring/run_scores.py --force` 来重新生成当天的报告。
 
+### 配置真实数据 API
+
+`etl/run_fetch.py` 会优先尝试调用真实的数据源：
+
+- Alpha Vantage：用于抓取 SPX/NDX 指数代理与 AI/防御板块 ETF 的最新收盘价与涨跌幅。
+- Coinbase / OKX：分别提供 BTC 现货、永续合约资金费率与基差。
+- Farside Investors：解析现货 ETF 表格获取最近一天的净申赎额。
+- Trading Economics：拉取接下来三天的宏观/事件日历。
+
+将上游凭证序列化为 JSON 放入 `API_KEYS` 环境变量即可：
+
+```bash
+export API_KEYS='{"alpha_vantage": "YOUR_ALPHA_KEY", "trading_economics": "user:password"}'
+```
+
+如果缺少密钥或接口超时，脚本会自动回退到内置的模拟数据，并在 `out/etl_status.json` 中标记失败项。
+
 ## 运行测试
 
 首先安装用于开发的额外依赖，然后使用 `uv run` (或在已激活的虚拟环境中直接使用 `pytest`) 来执行覆盖核心评分和简报生成助手的轻量级单元测试：

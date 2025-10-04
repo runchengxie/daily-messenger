@@ -208,3 +208,6 @@ __marimo__/
 # Project specific artefacts
 out/
 state/done_*
+
+# Debugging
+full_project_source.txt

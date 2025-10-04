@@ -1,0 +1,72 @@
+# Copy to .envrc and allow direnv to load local secrets.
+# Requires direnv: https://direnv.net
+
+# If a virtual environment from another project is active in the current shell, deactivate it first.
+if [ -n "$VIRTUAL_ENV" ] && [ "$VIRTUAL_ENV" != "$PWD/.venv" ]; then
+  # Safely try to run the deactivate command if it exists.
+  command -v deactivate >/dev/null 2>&1 && deactivate || true
+  # As a fallback, unset the VIRTUAL_ENV variable to ensure the shell is clean.
+  unset VIRTUAL_ENV
+fi
+
+# Load environment variables from .env files if they exist
+dotenv_if_exists .env
+dotenv_if_exists .env.local
+
+# Re-run this script when dependency manifests change
+watch_file pyproject.toml
+watch_file uv.lock
+watch_file requirements.txt
+watch_file requirements-dev.txt
+
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+# Backwards compatibility: map legacy NO_DEV to UV_NO_DEV
+if [ -n "$NO_DEV" ] && [ -z "$UV_NO_DEV" ]; then
+  export UV_NO_DEV=1
+fi
+
+SYNC_ARGS=()
+[ -f uv.lock ] && SYNC_ARGS+=(--frozen)
+[ -n "$UV_NO_DEV" ] && SYNC_ARGS+=(--no-dev)
+
+# Ensure the virtual environment exists
+ensure_venv_uv() {
+  if [ ! -d .venv ]; then
+    uv venv --seed || return 1
+  fi
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+}
+
+ensure_venv_py() {
+  if [ ! -d .venv ]; then
+    python3 -m venv .venv || python -m venv .venv
+  fi
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+  python -m pip install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
+}
+
+if has_cmd uv; then
+  # Prefer using uv if available
+  if ensure_venv_uv; then
+    if ! uv sync "${SYNC_ARGS[@]}"; then
+      echo "warning: uv sync failed, the environment might be incomplete" >&2
+    fi
+  else
+    echo "notice: uv venv failed, falling back to python venv + pip" >&2
+    ensure_venv_py
+  fi
+else
+  echo "notice: uv not detected, using the python venv + pip method" >&2
+  ensure_venv_py
+  # Installation strategy when using pip
+  if [ -f requirements-dev.txt ] && [ -z "$UV_NO_DEV" ] && [ -z "$NO_DEV" ]; then
+    pip install -r requirements-dev.txt || echo "warning: failed to install requirements-dev.txt" >&2
+  elif [ -f requirements.txt ]; then
+    pip install -r requirements.txt || echo "warning: failed to install requirements.txt" >&2
+  elif [ -f pyproject.toml ]; then
+    pip install -e . || echo 'warning: failed to install "." with pip' >&2
+  fi
+fi

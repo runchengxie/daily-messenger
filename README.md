@@ -1,106 +1,105 @@
-# Daily Messenger
+# Daily Messenger (每日简报)
 
-Automated daily market digest tailored for GitHub Actions + GitHub Pages deployments. The application simulates the ETL → scoring → reporting → Feishu notification workflow described in the requirement list and is ready to be wired into real data sources.
+一个自动化的每日市场简报，专为 GitHub Actions 和 GitHub Pages 部署而设计。该应用模拟了需求列表中描述的 ETL → 评分 → 报告 → 飞书通知的工作流，并已准备好接入真实的数据源。
 
-## Repository layout
+## 仓库结构
 
 ```
 repo/
-  etl/                 # Data fetch scripts
-  scoring/             # Scoring logic
-  digest/              # HTML/text/card rendering
-  tools/               # Utility scripts (Feishu push)
-  config/              # Configurable weights and thresholds
-  data/                # Optional historical snapshots
-  state/               # Idempotency markers
-  out/                 # Build artefacts
-  .github/workflows/   # CI definitions
+  etl/                 # 数据抓取脚本
+  scoring/             # 评分逻辑
+  digest/              # HTML/文本/卡片渲染
+  tools/               # 工具脚本 (飞书推送)
+  config/              # 可配置的权重和阈值
+  data/                # 可选的历史数据快照
+  state/               # 幂等性标记
+  out/                 # 构建产物
+  .github/workflows/   # CI 定义
   requirements.txt
 ```
 
-## Quickstart
+## 快速开始
 
-1. **Install dependencies**
+1. **安装依赖**
 
-   Using [uv](https://github.com/astral-sh/uv) (preferred):
+    使用 [uv](https://github.com/astral-sh/uv) (推荐):
 
-   ```bash
-   uv sync
-   ```
+    ```bash
+    uv sync
+    ```
 
-   Or with virtualenv + pip:
+    或者使用 virtualenv + pip:
 
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
-   ```
+    ```bash
+    python -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+    ```
 
-2. **Run the pipeline locally**
+2. **在本地运行流水线**
 
-   ```bash
-   uv run python etl/run_fetch.py
-   uv run python scoring/run_scores.py --force
-   uv run python digest/make_daily.py
-   ```
+    ```bash
+    uv run python etl/run_fetch.py
+    uv run python scoring/run_scores.py --force
+    uv run python digest/make_daily.py
+    ```
 
-   If you are using the pip workflow, replace `uv run` with `python`.
+    如果你使用 pip 的工作流程，请将 `uv run` 替换为 `python`。
 
-   The generated files will be placed under `out/`. If you wish to test Feishu delivery, prepare a test webhook and run:
+    生成的文件将位于 `out/` 目录下。如果你想测试飞书消息发送，请准备一个测试用的 Webhook 并运行：
 
-   ```bash
-   export FEISHU_WEBHOOK=https://open.feishu.cn/xxx
-   python tools/post_feishu.py --webhook "$FEISHU_WEBHOOK" --summary out/digest_summary.txt --card out/digest_card.json
-   ```
+    ```bash
+    export FEISHU_WEBHOOK=https://open.feishu.cn/xxx
+    python tools/post_feishu.py --webhook "$FEISHU_WEBHOOK" --summary out/digest_summary.txt --card out/digest_card.json
+    ```
 
-3. **Reset idempotency**
+3. **重置幂等性**
 
-   The scoring step writes `state/done_YYYY-MM-DD`. Remove the file or run `python scoring/run_scores.py --force` to regenerate the same day’s report.
+    评分步骤会写入 `state/done_YYYY-MM-DD` 文件。删除该文件，或运行 `python scoring/run_scores.py --force` 来重新生成当天的报告。
 
-## Running tests
+## 运行测试
 
-Install the development extra first and then use `uv run` (or plain `pytest` inside an activated virtual environment) to execute the lightweight unit tests that cover core scoring and digest helpers:
+首先安装用于开发的额外依赖，然后使用 `uv run` (或在已激活的虚拟环境中直接使用 `pytest`) 来执行覆盖核心评分和简报生成助手的轻量级单元测试：
 
 ```bash
 uv sync --extra dev
 uv run pytest
 ```
 
-These tests validate the score weighting logic, generated action labels, and the summary/card builders that power the Feishu message payload.
+这些测试会验证分数权重逻辑、生成的行为标签，以及用于构建飞书消息内容的摘要/卡片生成器。
 
-## GitHub Actions automation
+## GitHub Actions 自动化
 
-The workflow defined in `.github/workflows/daily.yml` runs every weekday at 14:00 UTC (07:00 PT). It performs:
+定义在 `.github/workflows/daily.yml` 中的工作流会在每个工作日的 UTC 时间 14:00 (PT 时间 07:00) 运行。它会执行以下步骤：
 
-1. Checkout + Python environment bootstrap
-2. Dependency installation with pip cache
-3. ETL → scoring → digest scripts
-4. Upload `out/` as a GitHub Pages artifact and deploy
-5. Send the Feishu interactive card
+1. 检出代码并初始化 Python 环境
+2. 使用 pip 缓存安装依赖
+3. 运行 ETL → 评分 → 简报生成脚本
+4. 将 `out/` 目录作为 GitHub Pages 构建产物上传并部署
+5. 发送飞书交互式卡片
 
-Secrets required:
+需要配置以下 Secrets：
 
-- `FEISHU_WEBHOOK`: Feishu custom bot webhook URL
-- `FEISHU_SECRET` (optional): signature secret if enabled
-- `API_KEYS`: JSON string containing upstream API credentials (placeholders supported)
+- `FEISHU_WEBHOOK`: 飞书自定义机器人的 Webhook URL
+- `FEISHU_SECRET` (可选): 签名密钥 (如果启用)
+- `API_KEYS`: 包含上游 API 凭证的 JSON 字符串 (支持占位符)
 
-## Failure & degraded handling
+## 失败与降级处理
 
-- If ETL fails or raw files are missing, scoring falls back to neutral scores and the digest is marked as degraded.
-- The digest step can be forced into degraded mode via `python digest/make_daily.py --degraded`.
-- GitHub Actions continues to send a downgraded broadcast even after upstream failures.
+- 如果 ETL 失败或原始文件丢失，评分步骤将回退到中性分数，并且生成的简报会被标记为降级状态。
+- 可以通过运行 `python digest/make_daily.py --degraded` 强制让简报生成步骤进入降级模式。
+- 即使上游任务失败，GitHub Actions 仍会继续发送降级后的通知。
 
-## Troubleshooting
+## 问题排查
 
-| Symptom | Fix |
-| ------- | --- |
-| `FileNotFoundError` for raw data | Ensure `etl/run_fetch.py` ran successfully before scoring/digest. |
-| Digest shows stale content | Delete `state/done_YYYY-MM-DD` and rerun scoring with `--force`. |
-| Feishu webhook rejects request | Double-check signature secret, ensure the robot allows interactive cards. |
+| 现象 | 解决方法 |
+| --- | --- |
+| 原始数据文件 `FileNotFoundError` | 确保在运行评分/简报步骤之前，`etl/run_fetch.py` 已成功执行。 |
+| 简报显示的是旧内容 | 删除 `state/done_YYYY-MM-DD` 文件，并使用 `--force` 选项重新运行评分脚本。 |
+| 飞书 Webhook 拒绝请求 | 仔细检查签名密钥，并确保机器人已开启接收交互式卡片消息的权限。 |
 
-## Testing ideas
+## 测试思路
 
-- Add unit tests for `_score_ai` / `_score_btc` by feeding sample dictionaries and asserting the totals.
-- Snapshot-test the rendered HTML and Feishu card payload.
-- Extend ETL with actual market APIs when API keys are available.
-
+- 为 `_score_ai` / `_score_btc` 添加单元测试，通过输入示例字典并断言总分的方式进行。
+- 对渲染生成的 HTML 和飞书卡片内容进行快照测试。
+- 在获得 API 密钥后，使用真实的市场 API 来扩展 ETL 流程。

@@ -1,0 +1,96 @@
+name: daily-digest
+
+on:
+  schedule:
+    - cron: "0 14 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: daily-digest
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Guard 07:00–07:10 PT window
+        env:
+          TZ: America/Los_Angeles
+        run: |
+          now=$(TZ=$TZ date +%H%M)
+          if [ "$now" -lt "0700" ] || [ "$now" -gt "0710" ]; then
+            echo "当前不在播报窗口，提前结束。"
+            exit 0
+          fi
+
+      - name: Run ETL
+        id: etl
+        continue-on-error: true
+        env:
+          API_KEYS: ${{ secrets.API_KEYS }}
+        run: python etl/run_fetch.py
+
+      - name: Run scoring
+        id: scoring
+        continue-on-error: true
+        run: python scoring/run_scores.py
+
+      - name: Render digest
+        id: digest
+        run: |
+          if [ "${{ steps.etl.outcome }}" != "success" ] || [ "${{ steps.scoring.outcome }}" != "success" ]; then
+            echo "DEGRADED=1" >> $GITHUB_ENV
+            python digest/make_daily.py --degraded
+          else
+            python digest/make_daily.py
+          fi
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+      - name: Push Feishu card
+        if: always()
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+        run: |
+          if [ -z "$FEISHU_WEBHOOK" ]; then
+            echo "缺少 FEISHU_WEBHOOK，跳过推送。"
+            exit 0
+          fi
+          python tools/post_feishu.py --webhook "$FEISHU_WEBHOOK" --summary out/digest_summary.txt --card out/digest_card.json
+
+      - name: Mark failure when pipeline degraded
+        if: ${{ steps.etl.outcome != 'success' || steps.scoring.outcome != 'success' }}
+        run: exit 1

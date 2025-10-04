@@ -1,0 +1,24 @@
+weights:
+  default:
+    fundamental: 0.3
+    valuation: 0.25
+    sentiment: 0.2
+    liquidity: 0.15
+    event: 0.1
+  theme_ai:
+    fundamental: 0.3
+    valuation: 0.15
+    sentiment: 0.25
+    liquidity: 0.2
+    event: 0.1
+  theme_btc:
+    fundamental: 0.1
+    valuation: 0.15
+    sentiment: 0.3
+    liquidity: 0.3
+    event: 0.15
+thresholds:
+  watch_in: 70
+  watch_out: 40
+  action_add: 75
+  action_trim: 45

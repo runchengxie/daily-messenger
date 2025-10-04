@@ -23,7 +23,6 @@ repo/
   state/               # 幂等性标记
   out/                 # 构建产物
   .github/workflows/   # CI 定义
-  requirements.txt
 ```
 
 ## 快速开始

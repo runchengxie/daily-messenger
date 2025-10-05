@@ -32,6 +32,17 @@ SECTOR_PROXIES = {
     "Defensive": "XLP",  # Consumer staples ETF
 }
 
+HK_MARKET_SYMBOLS = [
+    {"symbol": "HSI", "label": "HSI"},
+]
+
+FMP_THEME_SYMBOLS = {
+    "ai": ["NVDA", "MSFT", "GOOGL", "AMD"],
+    "magnificent7": ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA"],
+}
+
+MAX_EVENT_ITEMS = 12
+
 TE_GUEST_CREDENTIAL = "guest:guest"
 
 REQUEST_TIMEOUT = 15
@@ -73,6 +84,13 @@ def _request_json(url: str, *, params: Optional[Dict[str, Any]] = None, headers:
     resp = requests.get(url, params=params, headers=hdrs, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     return resp.json()
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class _HTMLTableParser(HTMLParser):
@@ -255,6 +273,120 @@ def _extract_performance(series: Dict[str, Dict[str, str]]) -> float:
     return 1 + change_pct / 100
 
 
+def _fetch_twelvedata_series(symbol: str, api_key: str) -> List[Dict[str, Any]]:
+    url = "https://api.twelvedata.com/time_series"
+    params = {
+        "symbol": symbol,
+        "interval": "1day",
+        "outputsize": 2,
+        "apikey": api_key,
+    }
+    payload = _request_json(url, params=params)
+    if payload.get("status") == "error":
+        raise RuntimeError(payload.get("message", "Twelve Data 返回错误"))
+    values = payload.get("values")
+    if not values or len(values) < 2:
+        raise RuntimeError("Twelve Data 未返回足够的时间序列")
+    return values
+
+
+def _extract_twelve_close_change(values: List[Dict[str, Any]]) -> Tuple[str, float, float]:
+    latest, prev = values[0], values[1]
+    close = _safe_float(latest.get("close"))
+    prev_close = _safe_float(prev.get("close"))
+    if close is None or prev_close is None or prev_close == 0:
+        raise RuntimeError("无法计算 Twelve Data 涨跌幅")
+    change_pct = (close - prev_close) / prev_close * 100
+    return latest.get("datetime", ""), close, change_pct
+
+
+def _fetch_hk_market_snapshot(api_keys: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], FetchStatus]:
+    api_key = api_keys.get("twelve_data")
+    if not api_key:
+        return [], FetchStatus(name="hongkong_market", ok=False, message="缺少 Twelve Data API Key")
+
+    rows: List[Dict[str, Any]] = []
+    for item in HK_MARKET_SYMBOLS:
+        symbol = item["symbol"]
+        label = item.get("label", symbol)
+        try:
+            series = _fetch_twelvedata_series(symbol, api_key)
+            _, close, change_pct = _extract_twelve_close_change(series)
+        except Exception as exc:  # noqa: BLE001
+            return [], FetchStatus(name=f"hongkong_{label}", ok=False, message=f"Twelve Data 请求失败: {exc}")
+
+        rows.append({"symbol": label, "close": round(close, 2), "change_pct": round(change_pct, 2)})
+
+    if not rows:
+        return [], FetchStatus(name="hongkong_market", ok=False, message="未获取到港股行情")
+
+    return rows, FetchStatus(name="hongkong_market", ok=True, message="港股行情已获取")
+
+
+def _fetch_fmp_quotes(symbols: List[str], api_key: str) -> Dict[str, Dict[str, Any]]:
+    joined = ",".join(sorted(set(symbols)))
+    url = f"https://financialmodelingprep.com/api/v3/quote/{joined}"
+    payload = _request_json(url, params={"apikey": api_key})
+    if not isinstance(payload, list):
+        raise RuntimeError("FMP 响应格式异常")
+    results: Dict[str, Dict[str, Any]] = {}
+    for item in payload:
+        symbol = item.get("symbol")
+        if symbol:
+            results[symbol] = item
+    return results
+
+
+def _mean(values: List[Optional[float]]) -> Optional[float]:
+    filtered = [v for v in values if v is not None]
+    if not filtered:
+        return None
+    return sum(filtered) / len(filtered)
+
+
+def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, Any], FetchStatus]:
+    api_key = api_keys.get("financial_modeling_prep")
+    if not api_key:
+        return {}, FetchStatus(name="fmp_theme", ok=False, message="缺少 FMP API Key")
+
+    all_symbols: List[str] = []
+    for symbols in FMP_THEME_SYMBOLS.values():
+        all_symbols.extend(symbols)
+
+    try:
+        quotes = _fetch_fmp_quotes(all_symbols, api_key)
+    except Exception as exc:  # noqa: BLE001
+        return {}, FetchStatus(name="fmp_theme", ok=False, message=f"FMP 请求失败: {exc}")
+
+    themes: Dict[str, Any] = {}
+    for theme, symbols in FMP_THEME_SYMBOLS.items():
+        entries = [quotes[s] for s in symbols if s in quotes]
+        if not entries:
+            continue
+        change_avg = _mean([_safe_float(e.get("changesPercentage")) for e in entries])
+        pe_avg = _mean([_safe_float(e.get("pe")) for e in entries])
+        ps_avg = _mean(
+            [
+                _safe_float(e.get("priceToSalesRatioTTM"))
+                if e.get("priceToSalesRatioTTM") is not None
+                else _safe_float(e.get("priceToSalesRatio"))
+                for e in entries
+            ]
+        )
+        market_cap_total = sum(_safe_float(e.get("marketCap")) or 0.0 for e in entries)
+        themes[theme] = {
+            "change_pct": round(change_avg, 2) if change_avg is not None else None,
+            "avg_pe": round(pe_avg, 2) if pe_avg is not None else None,
+            "avg_ps": round(ps_avg, 2) if ps_avg is not None else None,
+            "market_cap": round(market_cap_total, 2) if market_cap_total else None,
+        }
+
+    if not themes:
+        return {}, FetchStatus(name="fmp_theme", ok=False, message="FMP 未返回主题数据")
+
+    return themes, FetchStatus(name="fmp_theme", ok=True, message="FMP 主题估值已获取")
+
+
 def _fetch_market_snapshot_real(api_keys: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], FetchStatus]:
     api_key = api_keys.get("alpha_vantage")
     if not api_key:
@@ -332,12 +464,80 @@ def _fetch_events_real(trading_day: str, api_keys: Dict[str, Any]) -> Tuple[List
     return events, FetchStatus(name="events", ok=True, message="Trading Economics 事件日历已获取")
 
 
+def _fetch_finnhub_earnings(trading_day: str, api_keys: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], FetchStatus]:
+    api_key = api_keys.get("finnhub")
+    if not api_key:
+        return [], FetchStatus(name="finnhub_earnings", ok=False, message="缺少 Finnhub API Key")
+
+    start = datetime.strptime(trading_day, "%Y-%m-%d").date()
+    end = start + timedelta(days=5)
+    params = {
+        "from": trading_day,
+        "to": end.strftime("%Y-%m-%d"),
+        "token": api_key,
+    }
+    try:
+        payload = _request_json("https://finnhub.io/api/v1/calendar/earnings", params=params)
+    except Exception as exc:  # noqa: BLE001
+        return [], FetchStatus(name="finnhub_earnings", ok=False, message=f"Finnhub 请求失败: {exc}")
+
+    items = payload.get("earningsCalendar") or []
+    events: List[Dict[str, Any]] = []
+    for item in items:
+        date_str = item.get("date")
+        symbol = item.get("symbol")
+        if not date_str or not symbol:
+            continue
+        try:
+            event_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if not (start <= event_date <= end):
+            continue
+        eps_est = _safe_float(item.get("epsEstimate"))
+        eps_actual = _safe_float(item.get("epsActual"))
+        surprise_text = ""
+        if eps_actual is not None and eps_est is not None:
+            surprise = eps_actual - eps_est
+            surprise_text = f" EPS {eps_actual:.2f}/{eps_est:.2f} ({surprise:+.2f})"
+        session = str(item.get("time", "")).upper()
+        if session in {"AMC", "POSTMARKET"}:
+            session_label = "盘后"
+        elif session in {"BMO", "PREMARKET"}:
+            session_label = "盘前"
+        else:
+            session_label = ""
+        title = f"{symbol} 财报"
+        if session_label:
+            title += f"（{session_label}）"
+        if surprise_text:
+            title += surprise_text
+        market_cap = _safe_float(item.get("marketCapitalization"))
+        impact = "high" if market_cap and market_cap >= 200_000 else "medium"
+        events.append(
+            {
+                "title": title,
+                "date": event_date.strftime("%Y-%m-%d"),
+                "impact": impact,
+                "country": "US",
+            }
+        )
+
+    if not events:
+        return [], FetchStatus(name="finnhub_earnings", ok=False, message="Finnhub 未返回财报事件")
+
+    events.sort(key=lambda item: item["date"])
+    return events, FetchStatus(name="finnhub_earnings", ok=True, message="Finnhub 财报日历已获取")
+
+
 def _simulate_market_snapshot(trading_day: str) -> Tuple[Dict[str, Any], FetchStatus]:
     # Deterministic pseudo data keyed by date to keep examples stable.
     seed = sum(ord(ch) for ch in trading_day)
     index_level = 4800 + seed % 50
     ai_sector_perf = 1.2 + (seed % 7) * 0.1
     defensive_sector_perf = 0.8 + (seed % 5) * 0.05
+    hk_change = ((seed % 9) - 4) * 0.2
+    mag7_change = ((seed % 11) - 5) * 0.3
 
     market = {
         "date": trading_day,
@@ -349,6 +549,23 @@ def _simulate_market_snapshot(trading_day: str) -> Tuple[Dict[str, Any], FetchSt
             {"name": "AI", "performance": round(ai_sector_perf, 2)},
             {"name": "Defensive", "performance": round(defensive_sector_perf, 2)},
         ],
+        "hk_indices": [
+            {"symbol": "HSI", "close": 18000 + seed % 200, "change_pct": round(hk_change, 2)},
+        ],
+        "themes": {
+            "ai": {
+                "performance": round(ai_sector_perf, 2),
+                "change_pct": round((seed % 5 - 2) * 0.5, 2),
+                "avg_pe": 32.5,
+                "avg_ps": 7.5,
+            },
+            "magnificent7": {
+                "change_pct": round(mag7_change, 2),
+                "avg_pe": 30.0,
+                "avg_ps": 6.2,
+                "market_cap": 12_000_000_000_000,
+            },
+        },
     }
     status = FetchStatus(name="market", ok=True, message="示例行情生成完毕")
     return market, status
@@ -408,6 +625,36 @@ def run() -> int:
         fallback, fallback_status = _simulate_market_snapshot(trading_day)
         market_data = fallback
         statuses.append(fallback_status)
+    else:
+        market_data = market_data or {}
+
+    hk_status: Optional[FetchStatus] = None
+    if api_keys.get("twelve_data"):
+        hk_rows, hk_status = _fetch_hk_market_snapshot(api_keys)
+        statuses.append(hk_status)
+        if hk_status.ok and market_data is not None:
+            market_data.setdefault("hk_indices", hk_rows)
+    elif api_keys:
+        statuses.append(FetchStatus(name="hongkong_market", ok=False, message="缺少 Twelve Data API Key"))
+
+    theme_metrics: Dict[str, Any] = {}
+    if market_data:
+        sectors = market_data.get("sectors", []) if isinstance(market_data, dict) else []
+        ai_perf = next((s.get("performance") for s in sectors if s.get("name") == "AI"), None)
+        if ai_perf is not None:
+            theme_metrics.setdefault("ai", {})["performance"] = ai_perf
+
+    if api_keys.get("financial_modeling_prep"):
+        themes, theme_status = _fetch_theme_metrics_from_fmp(api_keys)
+        statuses.append(theme_status)
+        if theme_status.ok:
+            for name, metrics in themes.items():
+                theme_metrics.setdefault(name, {}).update(metrics)
+    elif api_keys:
+        statuses.append(FetchStatus(name="fmp_theme", ok=False, message="缺少 FMP API Key"))
+
+    if market_data is not None and theme_metrics:
+        market_data.setdefault("themes", {}).update(theme_metrics)
 
     spot_price, spot_status = _fetch_coinbase_spot()
     statuses.append(spot_status)
@@ -448,6 +695,19 @@ def run() -> int:
         fallback_events, fallback_status = _simulate_events(trading_day)
         events = fallback_events
         statuses.append(fallback_status)
+    else:
+        finnhub_events: List[Dict[str, Any]] = []
+        if api_keys.get("finnhub"):
+            finnhub_events, finnhub_status = _fetch_finnhub_earnings(trading_day, api_keys)
+            statuses.append(finnhub_status)
+            if finnhub_status.ok:
+                events.extend(finnhub_events)
+        elif api_keys:
+            statuses.append(FetchStatus(name="finnhub_earnings", ok=False, message="缺少 Finnhub API Key"))
+
+    if events:
+        events.sort(key=lambda item: (item.get("date"), item.get("impact", "")))
+        events = events[:MAX_EVENT_ITEMS]
 
     raw_market_path = OUT_DIR / "raw_market.json"
     raw_events_path = OUT_DIR / "raw_events.json"

@@ -59,16 +59,38 @@ def _scale(value: float, midpoint: float = 0.0, sensitivity: float = 15.0) -> fl
     return max(0.0, min(100.0, score))
 
 
+def _inverse_ratio_score(value: float | None, baseline: float, sensitivity: float) -> float:
+    if value is None or value <= 0:
+        return 50.0
+    ratio = baseline / value
+    return _scale(ratio, midpoint=1.0, sensitivity=sensitivity)
+
+
+def _market_cap_score(value: float | None, baseline_trillions: float) -> float:
+    if value is None or value <= 0:
+        return 50.0
+    trillions = value / 1_000_000_000_000
+    return _scale(trillions, midpoint=baseline_trillions, sensitivity=6.0)
+
+
 def _score_ai(market: Dict[str, object], weights: Dict[str, float], degraded: bool) -> ThemeScore:
     sectors = market.get("sectors", []) if market else []
-    ai_perf = next((s.get("performance") for s in sectors if s.get("name") == "AI"), 1.0)
-    index_change = next((i.get("change_pct") for i in market.get("indices", []) if i.get("symbol") == "NDX"), 0.0)
+    themes = market.get("themes", {}) if market else {}
+    theme_ai = themes.get("ai", {}) if isinstance(themes, dict) else {}
+    ai_perf = theme_ai.get("performance")
+    if ai_perf is None:
+        ai_perf = next((s.get("performance") for s in sectors if s.get("name") == "AI"), 1.0)
+    index_change = theme_ai.get("change_pct")
+    if index_change is None:
+        index_change = next((i.get("change_pct") for i in market.get("indices", []) if i.get("symbol") == "NDX"), 0.0)
+    avg_pe = theme_ai.get("avg_pe") if isinstance(theme_ai, dict) else None
+    avg_ps = theme_ai.get("avg_ps") if isinstance(theme_ai, dict) else None
 
     breakdown = {
         "fundamental": _scale(ai_perf, midpoint=1.0, sensitivity=40),
-        "valuation": 55.0 if ai_perf < 1.1 else 45.0,
+        "valuation": _inverse_ratio_score(avg_pe, baseline=35.0, sensitivity=90.0),
         "sentiment": _scale(index_change, midpoint=0.0, sensitivity=25),
-        "liquidity": _scale(ai_perf, midpoint=1.0, sensitivity=35),
+        "liquidity": _inverse_ratio_score(avg_ps, baseline=8.0, sensitivity=70.0),
         "event": 70.0,
     }
     if degraded:
@@ -95,6 +117,28 @@ def _score_btc(btc: Dict[str, object], weights: Dict[str, float], degraded: bool
 
     total = sum(weights[k] * breakdown[k] for k in weights)
     return ThemeScore(name="btc", label="BTC", total=total, breakdown=breakdown, degraded=degraded)
+
+
+def _score_magnificent7(market: Dict[str, object], weights: Dict[str, float], degraded: bool) -> ThemeScore:
+    themes = market.get("themes", {}) if market else {}
+    theme = themes.get("magnificent7", {}) if isinstance(themes, dict) else {}
+    change_pct = theme.get("change_pct", 0.0)
+    avg_pe = theme.get("avg_pe")
+    avg_ps = theme.get("avg_ps")
+    market_cap = theme.get("market_cap")
+
+    breakdown = {
+        "fundamental": _market_cap_score(market_cap, baseline_trillions=11.5),
+        "valuation": _inverse_ratio_score(avg_pe, baseline=32.0, sensitivity=85.0),
+        "sentiment": _scale(change_pct, midpoint=0.0, sensitivity=22.0),
+        "liquidity": _inverse_ratio_score(avg_ps, baseline=7.0, sensitivity=65.0),
+        "event": 68.0,
+    }
+    if degraded:
+        breakdown = {k: 50.0 for k in breakdown}
+
+    total = sum(weights[k] * breakdown[k] for k in weights)
+    return ThemeScore(name="magnificent7", label="Magnificent 7", total=total, breakdown=breakdown, degraded=degraded)
 
 
 def _build_actions(themes: List[ThemeScore], thresholds: Dict[str, float]) -> List[Dict[str, str]]:
@@ -157,10 +201,12 @@ def run(argv: List[str] | None = None) -> int:
     if not raw_events:
         print("未找到事件数据，将在报告中提示。", file=sys.stderr)
 
-    theme_ai = _score_ai(raw_market.get("market", {}), weights.get("theme_ai", weights.get("default", {})), degraded)
+    market_payload = raw_market.get("market", {})
+    theme_ai = _score_ai(market_payload, weights.get("theme_ai", weights.get("default", {})), degraded)
     theme_btc = _score_btc(raw_market.get("btc", {}), weights.get("theme_btc", weights.get("default", {})), degraded)
+    theme_m7 = _score_magnificent7(market_payload, weights.get("theme_m7", weights.get("default", {})), degraded)
 
-    themes = [theme_ai, theme_btc]
+    themes = [theme_ai, theme_m7, theme_btc]
     actions = _build_actions(themes, thresholds)
 
     scores_payload = {

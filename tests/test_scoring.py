@@ -28,6 +28,27 @@ def test_score_ai_produces_weighted_total():
     assert math.isclose(degraded_result.total, expected_total, rel_tol=1e-9)
 
 
+def test_score_magnificent7_uses_theme_metrics():
+    config = scoring._load_config()
+    weights = config["weights"]["theme_m7"]
+    market = {
+        "themes": {
+            "magnificent7": {
+                "change_pct": 1.2,
+                "avg_pe": 28.0,
+                "avg_ps": 6.5,
+                "market_cap": 12_000_000_000_000,
+            }
+        }
+    }
+
+    result = scoring._score_magnificent7(market, weights, degraded=False)
+
+    assert result.name == "magnificent7"
+    assert result.total >= 0
+    assert not result.degraded
+
+
 def test_build_actions_generates_expected_labels():
     thresholds = scoring._load_config()["thresholds"]
     high_theme = scoring.ThemeScore(

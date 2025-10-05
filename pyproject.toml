@@ -15,7 +15,7 @@ dependencies = [
   "pytz==2024.1"
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
   "pytest>=8.1",
   "ruff>=0.3"
@@ -27,6 +27,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.uv]
 managed = true
+default-groups = ["dev"]
 
 [tool.setuptools.packages.find]
 include = [

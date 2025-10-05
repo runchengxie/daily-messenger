@@ -69,10 +69,15 @@ repo/
 `etl/run_fetch.py` 会优先尝试调用真实的数据源：
 
 - Alpha Vantage：用于抓取 SPX/NDX 指数代理与 AI/防御板块 ETF 的最新收盘价与涨跌幅。
+
 - Twelve Data：覆盖恒生指数等港股行情，补足国际视角。
+
 - Financial Modeling Prep：拉取 NVDA/MSFT 等主题篮子的估值比率与涨跌表现，驱动 AI 与 Magnificent 7 主题打分。
+
 - Coinbase / OKX：分别提供 BTC 现货、永续合约资金费率与基差。
+
 - Farside Investors：解析现货 ETF 表格获取最近一天的净申赎额。
+
 - Trading Economics + Finnhub：拉取宏观事件与未来一周的财报日历，二者合并为统一事件流。
 
 将上游凭证序列化为 JSON 放入 `API_KEYS` 环境变量即可：

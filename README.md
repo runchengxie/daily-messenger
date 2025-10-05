@@ -69,14 +69,16 @@ repo/
 `etl/run_fetch.py` 会优先尝试调用真实的数据源：
 
 - Alpha Vantage：用于抓取 SPX/NDX 指数代理与 AI/防御板块 ETF 的最新收盘价与涨跌幅。
+- Twelve Data：覆盖恒生指数等港股行情，补足国际视角。
+- Financial Modeling Prep：拉取 NVDA/MSFT 等主题篮子的估值比率与涨跌表现，驱动 AI 与 Magnificent 7 主题打分。
 - Coinbase / OKX：分别提供 BTC 现货、永续合约资金费率与基差。
 - Farside Investors：解析现货 ETF 表格获取最近一天的净申赎额。
-- Trading Economics：拉取接下来三天的宏观/事件日历。
+- Trading Economics + Finnhub：拉取宏观事件与未来一周的财报日历，二者合并为统一事件流。
 
 将上游凭证序列化为 JSON 放入 `API_KEYS` 环境变量即可：
 
 ```bash
-export API_KEYS='{"alpha_vantage": "YOUR_ALPHA_KEY", "trading_economics": "user:password"}'
+export API_KEYS='{"alpha_vantage": "YOUR_ALPHA_KEY", "trading_economics": "user:password", "twelve_data": "TD_KEY", "financial_modeling_prep": "FMP_KEY", "finnhub": "FINNHUB_TOKEN"}'
 ```
 
 如果缺少密钥或接口超时，脚本会自动回退到内置的模拟数据，并在 `out/etl_status.json` 中标记失败项。
@@ -106,7 +108,7 @@ uv run pytest
 
 - `FEISHU_WEBHOOK`: 飞书自定义机器人的 Webhook URL
 - `FEISHU_SECRET` (可选): 签名密钥 (如果启用)
-- `API_KEYS`: 包含上游 API 凭证的 JSON 字符串 (支持占位符)
+- `API_KEYS`: 包含上游 API 凭证的 JSON 字符串 (支持占位符)，建议包含 `alpha_vantage`、`twelve_data`、`financial_modeling_prep`、`trading_economics`、`finnhub` 等键名
 
 ## 失败与降级处理
 
@@ -123,6 +125,22 @@ uv run pytest
 | 飞书 Webhook 拒绝请求 | 仔细检查签名密钥，并确保机器人已开启接收交互式卡片消息的权限。 |
 
 ## 真实数据源接入建议
+
+### 免费数据源速查表
+
+在不额外付费的前提下，可以利用下列官方或提供免费层的 API，基本覆盖需求清单里的三大模块：
+
+| 目标 | 免费数据源 | 说明 |
+| --- | --- | --- |
+| 美股/港股行情、板块代理、基础估值 | [Alpha Vantage](https://www.alphavantage.co/documentation/?utm_source=chatgpt.com)、[Financial Modeling Prep](https://site.financialmodelingprep.com/developer/docs?utm_source=chatgpt.com)、[Twelve Data](https://twelvedata.com/exchanges?utm_source=chatgpt.com)、[marketstack](https://marketstack.com/documentation?utm_source=chatgpt.com)、[Stooq](https://stooq.com/q/d/?s=^hsi&utm_source=chatgpt.com) | Alpha Vantage/FMP 可做美股与 ETF，Twelve Data/marketstack 覆盖港股 EOD，Stooq 提供恒指等指数做情绪或风格代理。 |
+| 估值与财务报表 | [Financial Modeling Prep](https://site.financialmodelingprep.com/developer/docs?utm_source=chatgpt.com)、[SEC EDGAR](https://www.sec.gov/search-filings/edgar-application-programming-interfaces?utm_source=chatgpt.com) | FMP 免费层有常见估值比率，EDGAR 披露可自行计算更细指标。 |
+| 宏观事件、非农、假期 | [Trading Economics](https://docs.tradingeconomics.com/?utm_source=chatgpt.com)、[FRED](https://fred.stlouisfed.org/docs/api/fred/?utm_source=chatgpt.com)、[Polygon Market Holidays](https://polygon.io/docs/rest/stocks/market-operations/market-holidays?utm_source=chatgpt.com) | Trading Economics 提供日历，FRED 给宏观时间序列，Polygon 或 Finnhub 可补交易日。 |
+| 公司财报日历 | [Finnhub](https://finnhub.io/docs/api/earnings-calendar?utm_source=chatgpt.com) | 免费层每日限额，可直接并入事件流。 |
+| AI 与比特币赛道行情 | [Coinbase](https://docs.cdp.coinbase.com/coinbase-business/track-apis/prices?utm_source=chatgpt.com)、[OKX](https://www.okx.com/docs-v5/en/?utm_source=chatgpt.com)、[Binance](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Get-Funding-Rate-History?utm_source=chatgpt.com)、[Deribit](https://docs.deribit.com/?utm_source=chatgpt.com)、[Farside Investors](https://farside.co.uk/btc/?utm_source=chatgpt.com) | Coinbase 现货、OKX/Binance/Deribit 的资金费率与永续价格覆盖币圈指标，Farside 提供 ETF 净流入。 |
+| 情绪代理 | [Cboe Put/Call Ratio](https://www.cboe.com/us/options/market_statistics/historical_data/?utm_source=chatgpt.com)、[AAII Sentiment Survey](https://www.aaii.com/sentimentsurvey?utm_source=chatgpt.com) | 衍生品偏度与投资者问卷可作为股市情绪补充，币圈已有资金费率与基差。 |
+| AI 大模型资讯 | 官方博客（如 [OpenAI](https://openai.com/news/?utm_source=chatgpt.com)、DeepMind、Anthropic、Meta AI）、[arXiv API](https://info.arxiv.org/help/api/index.html?utm_source=chatgpt.com) | 通过 RSS 或 API 白名单聚合官方动态，接入现有事件模块。 |
+
+> 这些接口大多有调用频控或返回粒度限制，建议先在本地跑通流程，需求稳定后再考虑升级到更高配额或商用数据源。
 
 参考下列数据供应商和搭配方案，可以让项目从“模拟/假数据”平滑迁移到可上线的真实行情：
 

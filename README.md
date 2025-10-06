@@ -130,6 +130,24 @@ uv run pytest
 
 * 即使上游任务失败，GitHub Actions 仍会继续发送降级后的通知。
 
+## 测试运行
+
+```bash
+# 安装依赖同上
+
+# 可选：提供上游 API key（不配也能跑，脚本会回退到模拟数据）
+export API_KEYS='{"alpha_vantage":"...", "trading_economics":"user:pass", "twelve_data":"...", "financial_modeling_prep":"...", "finnhub":"..."}'
+
+# 1) 抓数（写出 raw_*.json 和 etl_status.json）
+python etl/run_fetch.py
+
+# 2) 计算打分（写出 scores.json / actions.json）
+python scoring/run_scores.py --force
+
+# 3) 渲染页面（写出 index.html、摘要与卡片 JSON）
+python digest/make_daily.py
+```
+
 ## 真实数据源接入建议
 
 ### 免费数据源速查表

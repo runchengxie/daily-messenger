@@ -133,7 +133,7 @@ uv run pytest
 ## 测试运行
 
 ```bash
-# 安装依赖同上
+# 安装依赖
 
 # 可选：提供上游 API key（不配也能跑，脚本会回退到模拟数据）
 export API_KEYS='{"alpha_vantage":"...", "trading_economics":"user:pass", "twelve_data":"...", "financial_modeling_prep":"...", "finnhub":"..."}'

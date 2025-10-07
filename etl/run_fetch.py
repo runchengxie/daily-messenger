@@ -22,6 +22,8 @@ from xml.etree import ElementTree as ET
 import pytz
 import requests
 
+from .fetchers import aaii_sentiment, cboe_putcall
+
 BASE_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = BASE_DIR / "out"
 
@@ -818,6 +820,19 @@ def run() -> int:
     statuses: List[FetchStatus] = []
     overall_ok = True
 
+    raw_market_path = OUT_DIR / "raw_market.json"
+    previous_sentiment: Dict[str, Any] = {}
+    if raw_market_path.exists():
+        try:
+            with raw_market_path.open("r", encoding="utf-8") as f_prev:
+                previous_payload = json.load(f_prev)
+        except json.JSONDecodeError:
+            previous_payload = {}
+        if isinstance(previous_payload, dict):
+            prev_sent = previous_payload.get("sentiment")
+            if isinstance(prev_sent, dict):
+                previous_sentiment = prev_sent
+
     market_data, status = _fetch_market_snapshot_real(api_keys)
     statuses.append(status)
     if not status.ok:
@@ -855,6 +870,30 @@ def run() -> int:
 
     if market_data is not None and theme_metrics:
         market_data.setdefault("themes", {}).update(theme_metrics)
+
+    sentiment_data: Dict[str, Any] = {}
+
+    put_call_payload, put_call_status = cboe_putcall.fetch()
+    statuses.append(put_call_status)
+    if getattr(put_call_status, "ok", False) and put_call_payload:
+        sentiment_data.update(put_call_payload)
+    else:
+        overall_ok = False
+        previous_put_call = previous_sentiment.get("put_call") if isinstance(previous_sentiment, dict) else None
+        if isinstance(previous_put_call, dict):
+            sentiment_data["put_call"] = previous_put_call
+            statuses.append(FetchStatus(name="cboe_put_call_fallback", ok=True, message="使用上一期 Put/Call 数据"))
+
+    aaii_payload, aaii_status = aaii_sentiment.fetch()
+    statuses.append(aaii_status)
+    if getattr(aaii_status, "ok", False) and aaii_payload:
+        sentiment_data.update(aaii_payload)
+    else:
+        overall_ok = False
+        previous_aaii = previous_sentiment.get("aaii") if isinstance(previous_sentiment, dict) else None
+        if isinstance(previous_aaii, dict):
+            sentiment_data["aaii"] = previous_aaii
+            statuses.append(FetchStatus(name="aaii_sentiment_fallback", ok=True, message="使用上一期 AAII 数据"))
 
     spot_price, spot_status = _fetch_coinbase_spot()
     statuses.append(spot_status)
@@ -924,8 +963,14 @@ def run() -> int:
     raw_events_path = OUT_DIR / "raw_events.json"
     status_path = OUT_DIR / "etl_status.json"
 
+    market_payload: Dict[str, Any] = {
+        "market": market_data,
+        "btc": btc_data,
+        "sentiment": sentiment_data,
+    }
+
     with raw_market_path.open("w", encoding="utf-8") as f:
-        json.dump({"market": market_data, "btc": btc_data}, f, ensure_ascii=False, indent=2)
+        json.dump(market_payload, f, ensure_ascii=False, indent=2)
 
     with raw_events_path.open("w", encoding="utf-8") as f:
         json.dump({"events": events}, f, ensure_ascii=False, indent=2)

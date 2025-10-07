@@ -10,11 +10,14 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from xml.etree import ElementTree as ET
 
 import pytz
 import requests
@@ -48,6 +51,20 @@ TE_GUEST_CREDENTIAL = "guest:guest"
 REQUEST_TIMEOUT = 15
 USER_AGENT = "daily-messenger-bot/0.1"
 
+DEFAULT_AI_FEEDS = [
+    "https://openai.com/news/rss.xml",
+    "https://deepmind.com/blog/feed/basic",
+]
+
+DEFAULT_ARXIV_PARAMS = {
+    "search_query": "cat:cs.LG OR cat:cs.AI",
+    "max_results": 8,
+    "sort_by": "submittedDate",
+    "sort_order": "descending",
+}
+
+DEFAULT_ARXIV_THROTTLE = 3.0
+
 
 @dataclass
 class FetchStatus:
@@ -77,6 +94,54 @@ def _load_api_keys() -> Dict[str, Any]:
         return {}
 
 
+def _resolve_ai_feeds(config: Dict[str, Any]) -> List[str]:
+    feeds = config.get("ai_feeds")
+    if isinstance(feeds, list):
+        normalized = [str(item).strip() for item in feeds if str(item).strip()]
+        return normalized
+    return list(DEFAULT_AI_FEEDS)
+
+
+def _resolve_arxiv_config(config: Dict[str, Any]) -> Tuple[Dict[str, Any], float]:
+    section = config.get("arxiv")
+    params = dict(DEFAULT_ARXIV_PARAMS)
+    throttle = DEFAULT_ARXIV_THROTTLE
+    if isinstance(section, dict):
+        search_query = section.get("search_query")
+        if isinstance(search_query, str) and search_query.strip():
+            params["search_query"] = search_query.strip()
+        max_results = section.get("max_results")
+        if isinstance(max_results, int) and max_results > 0:
+            params["max_results"] = max_results
+        sort_by = section.get("sort_by")
+        if isinstance(sort_by, str) and sort_by.strip():
+            params["sort_by"] = sort_by.strip()
+        sort_order = section.get("sort_order")
+        if isinstance(sort_order, str) and sort_order.strip():
+            params["sort_order"] = sort_order.strip()
+        throttle_val = section.get("throttle_seconds")
+        if isinstance(throttle_val, (int, float)) and throttle_val >= 0:
+            throttle = float(throttle_val)
+    # arXiv expects camelCase keys
+    request_params = {
+        "search_query": params["search_query"],
+        "max_results": params["max_results"],
+        "sortBy": params["sort_by"],
+        "sortOrder": params["sort_order"],
+    }
+    return request_params, throttle
+
+
+def _load_configuration() -> Tuple[Dict[str, Any], List[str], Dict[str, Any], float]:
+    api_keys = _load_api_keys()
+    ai_feeds = _resolve_ai_feeds(api_keys)
+    arxiv_params, arxiv_throttle = _resolve_arxiv_config(api_keys)
+    return api_keys, ai_feeds, arxiv_params, arxiv_throttle
+
+
+API_KEYS_CACHE, AI_NEWS_FEEDS, ARXIV_QUERY_PARAMS, ARXIV_THROTTLE = _load_configuration()
+
+
 def _request_json(url: str, *, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     hdrs = {"User-Agent": USER_AGENT}
     if headers:
@@ -91,6 +156,135 @@ def _safe_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _rss_text(node: ET.Element, *paths: str) -> str:
+    for path in paths:
+        text = node.findtext(path)
+        if text:
+            return text.strip()
+    return ""
+
+
+def _normalize_rss_date(raw: str) -> Optional[str]:
+    if not raw:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        parsed = parsedate_to_datetime(text)
+    except Exception:  # noqa: BLE001
+        parsed = None
+    if parsed is None:
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return parsed.date().isoformat()
+
+
+def _fetch_ai_rss_events(feeds: List[str]) -> Tuple[List[Dict[str, Any]], List[FetchStatus]]:
+    events: List[Dict[str, Any]] = []
+    statuses: List[FetchStatus] = []
+    for idx, url in enumerate(feeds, start=1):
+        try:
+            resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            statuses.append(
+                FetchStatus(
+                    name=f"ai_rss_{idx}",
+                    ok=False,
+                    message=f"RSS 请求失败: {url} ({exc})",
+                )
+            )
+            continue
+        try:
+            root = ET.fromstring(resp.content)
+        except ET.ParseError as exc:
+            statuses.append(
+                FetchStatus(
+                    name=f"ai_rss_{idx}",
+                    ok=False,
+                    message=f"RSS 解析失败: {url} ({exc})",
+                )
+            )
+            continue
+
+        items = root.findall(".//item") or root.findall(".//{*}entry")
+        feed_events: List[Dict[str, Any]] = []
+        for item in items[:5]:
+            title = _rss_text(item, "title", "{*}title") or "更新"
+            date_text = _rss_text(
+                item,
+                "pubDate",
+                "{*}updated",
+                "{*}published",
+                "{*}lastBuildDate",
+            )
+            normalized_date = _normalize_rss_date(date_text)
+            if not normalized_date:
+                normalized_date = datetime.utcnow().strftime("%Y-%m-%d")
+            feed_events.append(
+                {
+                    "title": title,
+                    "date": normalized_date,
+                    "impact": "medium",
+                    "source": url,
+                }
+            )
+        events.extend(feed_events)
+        statuses.append(
+            FetchStatus(
+                name=f"ai_rss_{idx}",
+                ok=True,
+                message=f"RSS 获取成功: {url}（{len(feed_events)} 条）",
+            )
+        )
+    return events, statuses
+
+
+def _fetch_arxiv_events(params: Dict[str, Any], throttle: float) -> Tuple[List[Dict[str, Any]], FetchStatus]:
+    url = "https://export.arxiv.org/api/query"
+    try:
+        resp = requests.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        return [], FetchStatus(name="arxiv", ok=False, message=f"arXiv 请求失败: {exc}")
+
+    try:
+        root = ET.fromstring(resp.content)
+    except ET.ParseError as exc:
+        return [], FetchStatus(name="arxiv", ok=False, message=f"arXiv 响应解析失败: {exc}")
+
+    events: List[Dict[str, Any]] = []
+    for entry in root.findall(".//{*}entry"):
+        title = (_rss_text(entry, "{*}title") or "").replace("\n", " ").strip()
+        if not title:
+            title = "arXiv 更新"
+        date_text = _rss_text(entry, "{*}updated", "{*}published")
+        normalized_date = None
+        if date_text:
+            try:
+                normalized_date = datetime.fromisoformat(date_text.replace("Z", "+00:00")).date().isoformat()
+            except ValueError:
+                normalized_date = _normalize_rss_date(date_text)
+        if not normalized_date:
+            normalized_date = datetime.utcnow().strftime("%Y-%m-%d")
+        events.append(
+            {
+                "title": f"arXiv: {title}",
+                "date": normalized_date,
+                "impact": "low",
+                "source": "arxiv",
+            }
+        )
+
+    if throttle > 0:
+        time.sleep(throttle)
+
+    return events, FetchStatus(name="arxiv", ok=True, message=f"arXiv 返回 {len(events)} 篇文章")
 
 
 class _HTMLTableParser(HTMLParser):
@@ -611,7 +805,13 @@ def run() -> int:
     trading_day = _current_trading_day()
     print(f"开始抓取 {trading_day} 的数据……")
 
-    api_keys = _load_api_keys()
+    api_keys, ai_feeds, arxiv_params, arxiv_throttle = _load_configuration()
+    global API_KEYS_CACHE, AI_NEWS_FEEDS, ARXIV_QUERY_PARAMS, ARXIV_THROTTLE
+    API_KEYS_CACHE = api_keys
+    AI_NEWS_FEEDS = ai_feeds
+    ARXIV_QUERY_PARAMS = arxiv_params
+    ARXIV_THROTTLE = arxiv_throttle
+
     if not api_keys:
         print("未提供 API 密钥，将使用示例数据。")
 
@@ -704,6 +904,17 @@ def run() -> int:
                 events.extend(finnhub_events)
         elif api_keys:
             statuses.append(FetchStatus(name="finnhub_earnings", ok=False, message="缺少 Finnhub API Key"))
+
+    if ai_feeds:
+        ai_events, feed_statuses = _fetch_ai_rss_events(ai_feeds)
+        statuses.extend(feed_statuses)
+        if ai_events:
+            events.extend(ai_events)
+
+    arxiv_events, arxiv_status = _fetch_arxiv_events(arxiv_params, arxiv_throttle)
+    statuses.append(arxiv_status)
+    if arxiv_status.ok and arxiv_events:
+        events.extend(arxiv_events)
 
     if events:
         events.sort(key=lambda item: (item.get("date"), item.get("impact", "")))

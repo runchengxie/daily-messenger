@@ -80,13 +80,32 @@ repo/
 
 * Trading Economics + Finnhub：拉取宏观事件与未来一周的财报日历，二者合并为统一事件流。
 
+* AI 新闻 RSS + arXiv：根据配置抓取 OpenAI、DeepMind 等 RSS 更新以及符合查询条件的最新 arXiv 论文。
+
 将上游凭证序列化为 JSON 放入 `API_KEYS` 环境变量即可：
 
 ```bash
-export API_KEYS='{"alpha_vantage": "YOUR_ALPHA_KEY", "trading_economics": "user:password", "twelve_data": "TD_KEY", "financial_modeling_prep": "FMP_KEY", "finnhub": "FINNHUB_TOKEN"}'
+export API_KEYS='{
+  "alpha_vantage": "YOUR_ALPHA_KEY",
+  "trading_economics": "user:password",
+  "twelve_data": "TD_KEY",
+  "financial_modeling_prep": "FMP_KEY",
+  "finnhub": "FINNHUB_TOKEN",
+  "ai_feeds": [
+    "https://openai.com/news/rss.xml",
+    "https://deepmind.com/blog/feed/basic"
+  ],
+  "arxiv": {
+    "search_query": "cat:cs.LG OR cat:cs.AI",
+    "max_results": 8,
+    "sort_by": "submittedDate",
+    "sort_order": "descending",
+    "throttle_seconds": 3
+  }
+}'
 ```
 
-如果缺少密钥或接口超时，脚本会自动回退到内置的模拟数据，并在 `out/etl_status.json` 中标记失败项。
+其中 `ai_feeds` 用于配置需要抓取的 AI 新闻 RSS 地址，`arxiv` 则控制 arXiv 检索的查询条件、返回数量及节流时间（单位：秒）。如果缺少密钥或接口超时，脚本会自动回退到内置的模拟数据，并在 `out/etl_status.json` 中标记失败项。
 
 ## 运行测试
 

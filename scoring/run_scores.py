@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -16,6 +18,12 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = BASE_DIR / "out"
 STATE_DIR = BASE_DIR / "state"
 CONFIG_PATH = BASE_DIR / "config" / "weights.yml"
+SENTIMENT_HISTORY_PATH = STATE_DIR / "sentiment_history.json"
+
+PUT_CALL_HISTORY_LIMIT = 252
+AAII_HISTORY_LIMIT = 104
+
+from .adaptors import sentiment as sentiment_adaptor
 
 
 @dataclass
@@ -73,7 +81,31 @@ def _market_cap_score(value: float | None, baseline_trillions: float) -> float:
     return _scale(trillions, midpoint=baseline_trillions, sensitivity=6.0)
 
 
-def _score_ai(market: Dict[str, object], weights: Dict[str, float], degraded: bool) -> ThemeScore:
+def _coerce_float(value: object) -> float | None:
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number) or math.isinf(number):
+        return None
+    return number
+
+
+def _append_history(history: Dict[str, List[float]], key: str, value: float | None, limit: int) -> None:
+    if value is None:
+        return
+    series = history.setdefault(key, [])
+    series.append(value)
+    if len(series) > limit:
+        del series[:-limit]
+
+
+def _score_ai(
+    market: Dict[str, object],
+    weights: Dict[str, float],
+    degraded: bool,
+    sentiment_score: float = 50.0,
+) -> ThemeScore:
     sectors = market.get("sectors", []) if market else []
     themes = market.get("themes", {}) if market else {}
     theme_ai = themes.get("ai", {}) if isinstance(themes, dict) else {}
@@ -89,7 +121,7 @@ def _score_ai(market: Dict[str, object], weights: Dict[str, float], degraded: bo
     breakdown = {
         "fundamental": _scale(ai_perf, midpoint=1.0, sensitivity=40),
         "valuation": _inverse_ratio_score(avg_pe, baseline=35.0, sensitivity=90.0),
-        "sentiment": _scale(index_change, midpoint=0.0, sensitivity=25),
+        "sentiment": sentiment_score,
         "liquidity": _inverse_ratio_score(avg_ps, baseline=8.0, sensitivity=70.0),
         "event": 70.0,
     }
@@ -100,7 +132,12 @@ def _score_ai(market: Dict[str, object], weights: Dict[str, float], degraded: bo
     return ThemeScore(name="ai", label="AI", total=total, breakdown=breakdown, degraded=degraded)
 
 
-def _score_btc(btc: Dict[str, object], weights: Dict[str, float], degraded: bool) -> ThemeScore:
+def _score_btc(
+    btc: Dict[str, object],
+    weights: Dict[str, float],
+    degraded: bool,
+    sentiment_score: float = 50.0,
+) -> ThemeScore:
     if not btc:
         degraded = True
         btc = {"etf_net_inflow_musd": 0.0, "funding_rate": 0.0, "futures_basis": 0.0}
@@ -108,7 +145,7 @@ def _score_btc(btc: Dict[str, object], weights: Dict[str, float], degraded: bool
     breakdown = {
         "fundamental": 50.0,
         "valuation": _scale(-abs(btc.get("futures_basis", 0.0)), midpoint=-0.01, sensitivity=250),
-        "sentiment": _scale(btc.get("funding_rate", 0.0), midpoint=0.005, sensitivity=600),
+        "sentiment": sentiment_score,
         "liquidity": _scale(btc.get("etf_net_inflow_musd", 0.0), midpoint=0.0, sensitivity=1.5),
         "event": 65.0,
     }
@@ -119,7 +156,12 @@ def _score_btc(btc: Dict[str, object], weights: Dict[str, float], degraded: bool
     return ThemeScore(name="btc", label="BTC", total=total, breakdown=breakdown, degraded=degraded)
 
 
-def _score_magnificent7(market: Dict[str, object], weights: Dict[str, float], degraded: bool) -> ThemeScore:
+def _score_magnificent7(
+    market: Dict[str, object],
+    weights: Dict[str, float],
+    degraded: bool,
+    sentiment_score: float = 50.0,
+) -> ThemeScore:
     themes = market.get("themes", {}) if market else {}
     theme = themes.get("magnificent7", {}) if isinstance(themes, dict) else {}
     change_pct = theme.get("change_pct", 0.0)
@@ -130,7 +172,7 @@ def _score_magnificent7(market: Dict[str, object], weights: Dict[str, float], de
     breakdown = {
         "fundamental": _market_cap_score(market_cap, baseline_trillions=11.5),
         "valuation": _inverse_ratio_score(avg_pe, baseline=32.0, sensitivity=85.0),
-        "sentiment": _scale(change_pct, midpoint=0.0, sensitivity=22.0),
+        "sentiment": sentiment_score,
         "liquidity": _inverse_ratio_score(avg_ps, baseline=7.0, sensitivity=65.0),
         "event": 68.0,
     }
@@ -201,10 +243,67 @@ def run(argv: List[str] | None = None) -> int:
     if not raw_events:
         print("未找到事件数据，将在报告中提示。", file=sys.stderr)
 
+    if degraded and os.getenv("STRICT"):
+        print("STRICT 模式启用：检测到数据降级，立即退出。", file=sys.stderr)
+        return 2
+
+    sentiment_node = raw_market.get("sentiment", {}) if isinstance(raw_market, dict) else {}
+
+    existing_history = _load_json(SENTIMENT_HISTORY_PATH)
+    if not isinstance(existing_history, dict):
+        existing_history = {}
+
+    history: Dict[str, List[float]] = {}
+    for key, limit in (("put_call_equity", PUT_CALL_HISTORY_LIMIT), ("aaii_bull_bear_spread", AAII_HISTORY_LIMIT)):
+        raw_values = existing_history.get(key)
+        series: List[float] = []
+        if isinstance(raw_values, list):
+            for value in raw_values:
+                number = _coerce_float(value)
+                if number is not None:
+                    series.append(number)
+        history[key] = series[-limit:]
+
+    if isinstance(sentiment_node, dict):
+        put_call = sentiment_node.get("put_call")
+        if isinstance(put_call, dict):
+            equity_value = _coerce_float(put_call.get("equity"))
+            _append_history(history, "put_call_equity", equity_value, PUT_CALL_HISTORY_LIMIT)
+        aaii = sentiment_node.get("aaii")
+        if isinstance(aaii, dict):
+            spread_value = _coerce_float(aaii.get("bull_bear_spread"))
+            _append_history(history, "aaii_bull_bear_spread", spread_value, AAII_HISTORY_LIMIT)
+
+    sentiment_result = None
+    if isinstance(sentiment_node, dict):
+        sentiment_result = sentiment_adaptor.aggregate(sentiment_node, history)
+
+    sentiment_score_value = sentiment_result.score if sentiment_result else 50.0
+
     market_payload = raw_market.get("market", {})
-    theme_ai = _score_ai(market_payload, weights.get("theme_ai", weights.get("default", {})), degraded)
-    theme_btc = _score_btc(raw_market.get("btc", {}), weights.get("theme_btc", weights.get("default", {})), degraded)
-    theme_m7 = _score_magnificent7(market_payload, weights.get("theme_m7", weights.get("default", {})), degraded)
+    btc_payload = raw_market.get("btc", {})
+
+    theme_ai = _score_ai(
+        market_payload,
+        weights.get("theme_ai", weights.get("default", {})),
+        degraded,
+        sentiment_score=sentiment_score_value,
+    )
+
+    btc_sentiment_value = _scale(btc_payload.get("funding_rate", 0.0), midpoint=0.005, sensitivity=600)
+    theme_btc = _score_btc(
+        btc_payload,
+        weights.get("theme_btc", weights.get("default", {})),
+        degraded,
+        sentiment_score=btc_sentiment_value,
+    )
+
+    theme_m7 = _score_magnificent7(
+        market_payload,
+        weights.get("theme_m7", weights.get("default", {})),
+        degraded,
+        sentiment_score=sentiment_score_value,
+    )
 
     themes = [theme_ai, theme_m7, theme_btc]
     actions = _build_actions(themes, thresholds)
@@ -215,6 +314,12 @@ def run(argv: List[str] | None = None) -> int:
         "events": raw_events.get("events", []),
         "degraded": degraded,
     }
+    if sentiment_result:
+        scores_payload["sentiment"] = sentiment_result.to_dict()
+
+    SENTIMENT_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with SENTIMENT_HISTORY_PATH.open("w", encoding="utf-8") as f_history:
+        json.dump(history, f_history, ensure_ascii=False, indent=2)
     _save_json(OUT_DIR / "scores.json", scores_payload)
 
     actions_payload = {

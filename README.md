@@ -154,7 +154,7 @@ uv run pytest
 ```bash
 # 安装依赖
 
-# 可选：提供上游 API key（不配也能跑，脚本会回退到模拟数据）
+# 提供上游 API key（在没有提供的情况下，项目会尝试从根目录的.env中读取）
 export API_KEYS='{"alpha_vantage":"...", "trading_economics":"user:pass", "twelve_data":"...", "financial_modeling_prep":"...", "finnhub":"..."}'
 
 # 1) 抓数（写出 raw_*.json 和 etl_status.json）

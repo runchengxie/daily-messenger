@@ -63,6 +63,10 @@ TE_GUEST_CREDENTIAL = "guest:guest"
 
 REQUEST_TIMEOUT = 15
 USER_AGENT = "Mozilla/5.0 (compatible; daily-messenger/0.1)"
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
 
 DEFAULT_AI_FEEDS = [
     "https://openai.com/news/rss.xml",
@@ -415,29 +419,61 @@ def _latest_date(rows: Iterable[List[str]]) -> Optional[List[str]]:
     return parsed[0][1]
 
 
-def _fetch_farside_latest_flow() -> Tuple[Optional[float], FetchStatus]:
-    url = "https://farside.co.uk/wp-json/wp/v2/pages"
-    try:
-        payload = _request_json(url, params={"slug": "bitcoin-etf-flow-all-data"})
-    except Exception as exc:  # noqa: BLE001
-        return None, FetchStatus(name="btc_etf_flow", ok=False, message=f"Farside 请求失败: {exc}")
+FARSIDE_PAGE_URL = "https://farside.co.uk/bitcoin-etf-flow-all-data/"
 
+
+def _fetch_farside_flow_from_html(session: requests.Session) -> float:
+    response = session.get(FARSIDE_PAGE_URL, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    parser = _HTMLTableParser()
+    parser.feed(response.text)
+    latest = _latest_date(parser.rows)
+    if not latest:
+        raise RuntimeError("未能解析 ETF 流入数据")
+    total = latest[-1] if latest else None
+    amount = _parse_number(total or "")
+    if amount is None:
+        raise RuntimeError("ETF 流入字段为空")
+    return amount
+
+
+def _fetch_farside_flow_from_api(session: requests.Session) -> float:
+    response = session.get(
+        "https://farside.co.uk/wp-json/wp/v2/pages",
+        params={"slug": "bitcoin-etf-flow-all-data"},
+        timeout=REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    payload = response.json()
     if not payload:
-        return None, FetchStatus(name="btc_etf_flow", ok=False, message="Farside 未返回内容")
-
+        raise RuntimeError("Farside 未返回内容")
     content = payload[0].get("content", {}).get("rendered", "")
     parser = _HTMLTableParser()
     parser.feed(content)
     latest = _latest_date(parser.rows)
     if not latest:
-        return None, FetchStatus(name="btc_etf_flow", ok=False, message="未能解析 ETF 流入数据")
-
-    total = latest[-1] if latest else None
-    amount = _parse_number(total or "")
+        raise RuntimeError("未能解析 ETF 流入数据")
+    amount = _parse_number((latest[-1] if latest else "") or "")
     if amount is None:
-        return None, FetchStatus(name="btc_etf_flow", ok=False, message="ETF 流入字段为空")
+        raise RuntimeError("ETF 流入字段为空")
+    return amount
 
-    return amount, FetchStatus(name="btc_etf_flow", ok=True, message="ETF 净流入读取成功")
+
+def _fetch_farside_latest_flow() -> Tuple[Optional[float], FetchStatus]:
+    session = requests.Session()
+    session.headers.update({"User-Agent": BROWSER_USER_AGENT, "Referer": "https://farside.co.uk/"})
+    errors: List[str] = []
+    for fetcher, label in ((
+        _fetch_farside_flow_from_html,
+        "html",
+    ), (_fetch_farside_flow_from_api, "api")):
+        try:
+            amount = fetcher(session)
+            return amount, FetchStatus(name="btc_etf_flow", ok=True, message=f"ETF 净流入读取成功（{label}）")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{label}: {exc}")
+    detail = "; ".join(errors) if errors else "未知原因"
+    return None, FetchStatus(name="btc_etf_flow", ok=False, message=f"Farside 请求失败: {detail}")
 
 
 def _fetch_coinbase_spot() -> Tuple[Optional[float], FetchStatus]:
@@ -653,6 +689,17 @@ def _fetch_hk_market_snapshot(api_keys: Dict[str, Any]) -> Tuple[List[Dict[str, 
     return [], FetchStatus(name="hongkong_HSI", ok=False, message=f"港股行情获取失败: {detail}")
 
 
+FMP_STABLE_URL = "https://financialmodelingprep.com/stable/quote"
+FMP_WARMUP_URL = "https://financialmodelingprep.com/"
+FMP_BATCH_SIZE = 50
+FMP_MAX_RETRIES = 3
+FMP_RETRY_DELAY = 0.8
+
+
+class _FMPThrottledError(RuntimeError):
+    """Raised when FMP signals throttling or access denial."""
+
+
 def _normalize_fmp_payload(payload: Any) -> Dict[str, Dict[str, Any]]:
     if not isinstance(payload, list):
         raise RuntimeError("FMP 响应格式异常")
@@ -666,52 +713,74 @@ def _normalize_fmp_payload(payload: Any) -> Dict[str, Dict[str, Any]]:
     return results
 
 
-def _fetch_fmp_quotes_by_path(symbols: List[str], api_key: str) -> Dict[str, Dict[str, Any]]:
-    joined = ",".join(sorted(set(symbols)))
-    url = f"https://financialmodelingprep.com/api/v3/quote/{joined}"
-    payload = _request_json(url, params={"apikey": api_key})
-    return _normalize_fmp_payload(payload)
+def _chunk_symbols(symbols: List[str], size: int) -> Iterable[List[str]]:
+    unique = sorted({s for s in symbols if s})
+    for idx in range(0, len(unique), size):
+        yield unique[idx : idx + size]
 
 
-def _fetch_fmp_quotes_by_query(symbols: List[str], api_key: str) -> Dict[str, Dict[str, Any]]:
-    joined = ",".join(sorted(set(symbols)))
-    url = "https://financialmodelingprep.com/api/v3/quote"
-    payload = _request_json(url, params={"symbol": joined, "apikey": api_key})
-    return _normalize_fmp_payload(payload)
+def _init_fmp_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": BROWSER_USER_AGENT,
+        "Accept": "application/json",
+    })
+    try:
+        session.get(FMP_WARMUP_URL, timeout=REQUEST_TIMEOUT)
+    except Exception:  # noqa: BLE001 - warm-up best effort
+        pass
+    return session
 
 
-def _fetch_fmp_quotes_serial(symbols: List[str], api_key: str) -> Dict[str, Dict[str, Any]]:
+def _request_fmp_chunk(session: requests.Session, symbols: List[str], api_key: str) -> Dict[str, Dict[str, Any]]:
+    params = {"symbol": ",".join(symbols), "apikey": api_key}
+    response = session.get(FMP_STABLE_URL, params=params, timeout=REQUEST_TIMEOUT)
+    if response.status_code == 200:
+        try:
+            return _normalize_fmp_payload(response.json())
+        except ValueError as exc:  # JSON decode error
+            raise RuntimeError("FMP 响应解析失败") from exc
+    if response.status_code in {403, 429}:
+        raise _FMPThrottledError(f"FMP 限流: HTTP {response.status_code}")
+    try:
+        response.raise_for_status()
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"FMP 请求失败: {exc}") from exc
+    raise RuntimeError(f"FMP 未知状态码: {response.status_code}")
+
+
+def _fetch_fmp_quotes_stable(symbols: List[str], api_key: str) -> Dict[str, Dict[str, Any]]:
+    session = _init_fmp_session()
     results: Dict[str, Dict[str, Any]] = {}
-    for symbol in sorted(set(symbols)):
-        url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}"
-        payload = _request_json(url, params={"apikey": api_key})
-        normalized = _normalize_fmp_payload(payload)
-        if symbol in normalized:
-            results[symbol] = normalized[symbol]
-        else:
-            # pick the first entry when API normalizes symbols differently
-            first = next(iter(normalized.values()), None)
-            if isinstance(first, dict):
-                results[symbol] = first
-        time.sleep(0.2)
+    for batch in _chunk_symbols(symbols, FMP_BATCH_SIZE):
+        delay = FMP_RETRY_DELAY
+        for attempt in range(1, FMP_MAX_RETRIES + 1):
+            try:
+                payload = _request_fmp_chunk(session, batch, api_key)
+            except _FMPThrottledError as exc:
+                raise RuntimeError(str(exc)) from exc
+            except Exception as exc:  # noqa: BLE001
+                if attempt == FMP_MAX_RETRIES:
+                    raise RuntimeError(f"{','.join(batch)}: {exc}") from exc
+                time.sleep(delay)
+                delay *= 2
+                continue
+            results.update(payload)
+            time.sleep(0.3)
+            break
+    missing = sorted(set(symbols) - set(results))
+    if missing:
+        raise RuntimeError(f"FMP 缺少符号: {', '.join(missing)}")
     if not results:
-        raise RuntimeError("FMP 单支请求未返回数据")
+        raise RuntimeError("FMP 稳定端点未返回数据")
     return results
 
 
 def _fetch_fmp_quotes(symbols: List[str], api_key: str) -> Tuple[Dict[str, Dict[str, Any]], str]:
-    attempts = [
-        ("fmp_batch_path", _fetch_fmp_quotes_by_path),
-        ("fmp_batch_query", _fetch_fmp_quotes_by_query),
-        ("fmp_serial", _fetch_fmp_quotes_serial),
-    ]
-    errors: List[str] = []
-    for label, fn in attempts:
-        try:
-            return fn(symbols, api_key), label
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"{label}: {exc}")
-    raise RuntimeError("; ".join(errors) or "FMP 请求失败")
+    try:
+        return _fetch_fmp_quotes_stable(symbols, api_key), "fmp_stable"
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"fmp_stable: {exc}") from exc
 
 
 def _fetch_yahoo_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:

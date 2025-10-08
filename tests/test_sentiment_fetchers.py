@@ -5,33 +5,52 @@ from scoring.adaptors import sentiment as sentiment_adaptor
 
 
 class _DummyResponse:
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, status_code: int = 200) -> None:
         self.text = text
+        self.status_code = status_code
 
     def raise_for_status(self) -> None:  # noqa: D401 - test helper
-        return None
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self) -> object:
+        import json
+
+        return json.loads(self.text)
+
+
+class _DummySession:
+    def __init__(self, responses: dict[str, _DummyResponse]) -> None:
+        self._responses = responses
+        self.headers: dict[str, str] = {}
+
+    def get(  # noqa: ANN001 - test double
+        self,
+        url: str,
+        timeout: int | None = None,
+        params: dict | None = None,
+    ) -> _DummyResponse:
+        key = url
+        if params:
+            key = f"{url}?{sorted(params.items())}"
+        response = self._responses.get(key)
+        if response is None:
+            raise RuntimeError(f"no response for {key}")
+        return response
 
 
 def test_cboe_fetch_parses_ratios(monkeypatch: pytest.MonkeyPatch) -> None:
-    html = """
-    <html>
-      <body>
-        <table>
-          <tr><th>Label</th><th>Value</th></tr>
-          <tr><td>EQUITY PUT/CALL RATIO</td><td>0.77</td></tr>
-          <tr><td>INDEX PUT/CALL RATIO</td><td>1.25</td></tr>
-          <tr><td>SPX + SPXW PUT/CALL RATIO</td><td>1.11</td></tr>
-          <tr><td>CBOE VOLATILITY INDEX (VIX) PUT/CALL RATIO</td><td>0.42</td></tr>
-        </table>
-      </body>
-    </html>
-    """
+    base = "DATE,CALL,PUT,TOTAL,P/C Ratio\n10/10/2024,100,80,180,0.77\n"
+    responses = {
+        "https://www.cboe.com": _DummyResponse("ok"),
+        "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv": _DummyResponse(base),
+        "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/indexpc.csv": _DummyResponse(base.replace("0.77", "1.25")),
+        "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/spxpc.csv": _DummyResponse(base.replace("0.77", "1.11")),
+        "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/vixpc.csv": _DummyResponse(base.replace("0.77", "0.42")),
+    }
 
-    def fake_get(url: str, headers: dict, timeout: int) -> _DummyResponse:  # noqa: ANN001
-        assert "cboe.com" in url
-        return _DummyResponse(html)
-
-    monkeypatch.setattr(cboe_putcall.requests, "get", fake_get)
+    dummy_session = _DummySession(responses)
+    monkeypatch.setattr(cboe_putcall.requests, "Session", lambda: dummy_session)
 
     payload, status = cboe_putcall.fetch()
 
@@ -63,11 +82,23 @@ def test_aaii_fetch_parses_latest_row(monkeypatch: pytest.MonkeyPatch) -> None:
     </html>
     """
 
-    def fake_get(url: str, headers: dict, timeout: int) -> _DummyResponse:  # noqa: ANN001
-        assert "aaii.com" in url
-        return _DummyResponse(html)
+    rss = """<?xml version='1.0'?><rss><channel><item><title>October 10, 2024 AAII Sentiment Survey</title><link>https://insights.aaii.com/p/october-10-2024-aaii-sentiment</link></item></channel></rss>"""
+    html = """
+    <html>
+      <body>
+        <h1>October 10, 2024 AAII Sentiment Survey</h1>
+        <p>Bullish sentiment registered 42.5% while Neutral investors were 25.0%.</p>
+        <p>Bearish responses fell to 32.5%.</p>
+      </body>
+    </html>
+    """
+    responses = {
+        aaii_sentiment.RSS_URL: _DummyResponse(rss),
+        "https://insights.aaii.com/p/october-10-2024-aaii-sentiment": _DummyResponse(html),
+    }
 
-    monkeypatch.setattr(aaii_sentiment.requests, "get", fake_get)
+    dummy_session = _DummySession(responses)
+    monkeypatch.setattr(aaii_sentiment.requests, "Session", lambda: dummy_session)
 
     payload, status = aaii_sentiment.fetch()
 

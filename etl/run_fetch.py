@@ -85,15 +85,69 @@ def _current_trading_day() -> str:
     return now.strftime("%Y-%m-%d")
 
 
+CANONICAL_API_KEYS = (
+    "alpha_vantage",
+    "twelve_data",
+    "financial_modeling_prep",
+    "trading_economics",
+    "finnhub",
+)
+
+
 def _load_api_keys() -> Dict[str, Any]:
+    data: Dict[str, Any] = {}
+
+    # 1) Optional JSON file referenced via API_KEYS_PATH
+    path_hint = os.getenv("API_KEYS_PATH")
+    if path_hint:
+        candidate_paths = []
+        expanded = Path(path_hint).expanduser()
+        candidate_paths.append(expanded)
+        if not expanded.is_absolute():
+            candidate_paths.append((BASE_DIR / expanded).resolve())
+        for candidate in candidate_paths:
+            try:
+                with open(candidate, "r", encoding="utf-8") as fh:
+                    payload = json.load(fh)
+            except FileNotFoundError:
+                continue
+            except Exception as exc:  # noqa: BLE001
+                print(f"API_KEYS_PATH 读取失败: {exc}", file=sys.stderr)
+                continue
+            if isinstance(payload, dict):
+                data.update(payload)
+                break
+
+    # 2) Inline JSON payload
     raw = os.getenv("API_KEYS")
-    if not raw:
-        return {}
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        print("API_KEYS 无法解析为 JSON: %s" % exc, file=sys.stderr)
-        return {}
+    if raw:
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            print(f"API_KEYS 无法解析为 JSON: {exc}", file=sys.stderr)
+        else:
+            if isinstance(payload, dict):
+                data.update(payload)
+
+    # 3) Loose environment variables (case insensitive)
+    env = os.environ
+    for key in CANONICAL_API_KEYS:
+        if key in data:
+            continue
+        direct = env.get(key)
+        if not direct:
+            direct = env.get(key.upper())
+        if direct:
+            data[key] = direct
+
+    # 4) Trading Economics username/password split entries
+    if "trading_economics" not in data:
+        te_user = env.get("TRADING_ECONOMICS_USER") or env.get("trading_economics_user")
+        te_password = env.get("TRADING_ECONOMICS_PASSWORD") or env.get("trading_economics_password")
+        if te_user and te_password:
+            data["trading_economics"] = f"{te_user}:{te_password}"
+
+    return data
 
 
 def _resolve_ai_feeds(config: Dict[str, Any]) -> List[str]:

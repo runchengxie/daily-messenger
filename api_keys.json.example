@@ -1,0 +1,8 @@
+# Use this json template to import the api keys
+{
+    "alpha_vantage": "ALPHA_KEY",
+    "twelve_data": "TD_KEY",
+    "financial_modeling_prep": "FMP_KEY",
+    "trading_economics": "user:password",
+    "finnhub": "FINNHUB_TOKEN"
+}

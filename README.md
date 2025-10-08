@@ -166,3 +166,14 @@ python scoring/run_scores.py --force
 # 3) 渲染页面（写出 index.html、摘要与卡片 JSON）
 python digest/make_daily.py
 ```
+
+## 云端CICD配置API KEY环境变量的方法
+
+```text
+ALPHA_VANTAGE=ALPHA_KEY
+TWELVE_DATA=TD_KEY
+FINANCIAL_MODELING_PREP=FMP_KEY
+TRADING_ECONOMICS_USER=user
+TRADING_ECONOMICS_PASSWORD=password
+FINNHUB=FINNHUB_TOKEN
+```

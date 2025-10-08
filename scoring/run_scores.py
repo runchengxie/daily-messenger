@@ -15,6 +15,8 @@ from typing import Dict, List, Tuple
 import yaml
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 OUT_DIR = BASE_DIR / "out"
 STATE_DIR = BASE_DIR / "state"
 CONFIG_PATH = BASE_DIR / "config" / "weights.yml"
@@ -23,7 +25,7 @@ SENTIMENT_HISTORY_PATH = STATE_DIR / "sentiment_history.json"
 PUT_CALL_HISTORY_LIMIT = 252
 AAII_HISTORY_LIMIT = 104
 
-from .adaptors import sentiment as sentiment_adaptor
+from scoring.adaptors import sentiment as sentiment_adaptor
 
 
 @dataclass

@@ -22,7 +22,11 @@ from xml.etree import ElementTree as ET
 import pytz
 import requests
 
-from .fetchers import aaii_sentiment, cboe_putcall
+if __package__:
+    from .fetchers import aaii_sentiment, cboe_putcall
+else:  # pragma: no cover - runtime convenience for direct script execution
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from etl.fetchers import aaii_sentiment, cboe_putcall
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = BASE_DIR / "out"

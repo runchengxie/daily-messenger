@@ -72,8 +72,8 @@ cython_debug/
 .pypirc
 
 # Project specific artefacts
-out/
-state/done_*
+/out/
+/state/
 
 # Debugging
 full_project_source.txt

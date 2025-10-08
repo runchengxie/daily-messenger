@@ -7,6 +7,7 @@ model small so it can be swapped with real data sources later.
 """
 from __future__ import annotations
 
+import csv
 import json
 import os
 import sys
@@ -17,6 +18,7 @@ from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import quote
 from xml.etree import ElementTree as ET
 
 import pytz
@@ -45,6 +47,11 @@ HK_MARKET_SYMBOLS = [
     {"symbol": "HSI", "label": "HSI"},
 ]
 
+HK_PROXY_SYMBOLS = [
+    "2800.HK",
+    "2828.HK",
+]
+
 FMP_THEME_SYMBOLS = {
     "ai": ["NVDA", "MSFT", "GOOGL", "AMD"],
     "magnificent7": ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA"],
@@ -55,7 +62,7 @@ MAX_EVENT_ITEMS = 12
 TE_GUEST_CREDENTIAL = "guest:guest"
 
 REQUEST_TIMEOUT = 15
-USER_AGENT = "daily-messenger-bot/0.1"
+USER_AGENT = "Mozilla/5.0 (compatible; daily-messenger/0.1)"
 
 DEFAULT_AI_FEEDS = [
     "https://openai.com/news/rss.xml",
@@ -527,67 +534,207 @@ def _extract_performance(series: Dict[str, Dict[str, str]]) -> float:
     return 1 + change_pct / 100
 
 
-def _fetch_twelvedata_series(symbol: str, api_key: str) -> List[Dict[str, Any]]:
-    url = "https://api.twelvedata.com/time_series"
-    params = {
-        "symbol": symbol,
-        "interval": "1day",
-        "outputsize": 2,
-        "apikey": api_key,
-    }
+def _fetch_stooq_series(symbol: str) -> List[Dict[str, Any]]:
+    params = {"s": symbol.lower(), "i": "d"}
+    resp = requests.get("https://stooq.com/q/d/l/", params=params, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT)
+    resp.raise_for_status()
+    reader = csv.DictReader(resp.text.splitlines())
+    rows: List[Dict[str, Any]] = []
+    for row in reader:
+        normalized = {k.strip().lower(): (v.strip() if isinstance(v, str) else v) for k, v in row.items() if k}
+        if normalized.get("date"):
+            rows.append(normalized)
+    if len(rows) < 2:
+        raise RuntimeError("Stooq 未返回足够的时间序列")
+    return rows
+
+
+def _extract_latest_change(rows: List[Dict[str, Any]], *, close_key: str = "close") -> Tuple[str, float, float]:
+    ordered = sorted(rows, key=lambda item: item.get("date"))
+    latest, prev = ordered[-1], ordered[-2]
+    latest_close = _safe_float(latest.get(close_key))
+    prev_close = _safe_float(prev.get(close_key))
+    if latest_close is None or prev_close is None or prev_close == 0:
+        raise RuntimeError("无法计算涨跌幅")
+    change_pct = (latest_close - prev_close) / prev_close * 100
+    return str(latest.get("date", "")), latest_close, change_pct
+
+
+def _fetch_hsi_from_stooq() -> Tuple[List[Dict[str, Any]], str]:
+    rows = _fetch_stooq_series("^hsi")
+    day, close, change_pct = _extract_latest_change(rows)
+    payload = [
+        {
+            "symbol": HK_MARKET_SYMBOLS[0]["label"],
+            "close": round(close, 2),
+            "change_pct": round(change_pct, 2),
+        }
+    ]
+    message = f"使用 Stooq (^HSI) 数据（{day}）"
+    return payload, message
+
+
+def _fetch_yahoo_chart(symbol: str) -> Dict[str, Any]:
+    encoded = quote(symbol, safe="")
+    url = f"https://query2.finance.yahoo.com/v8/finance/chart/{encoded}"
+    params = {"interval": "1d", "range": "5d"}
     payload = _request_json(url, params=params)
-    if payload.get("status") == "error":
-        raise RuntimeError(payload.get("message", "Twelve Data 返回错误"))
-    values = payload.get("values")
-    if not values or len(values) < 2:
-        raise RuntimeError("Twelve Data 未返回足够的时间序列")
-    return values
+    chart = (payload.get("chart") or {}).get("result") or []
+    if not chart:
+        raise RuntimeError("Yahoo Finance 未返回行情")
+    return chart[0]
 
 
-def _extract_twelve_close_change(values: List[Dict[str, Any]]) -> Tuple[str, float, float]:
-    latest, prev = values[0], values[1]
-    close = _safe_float(latest.get("close"))
-    prev_close = _safe_float(prev.get("close"))
-    if close is None or prev_close is None or prev_close == 0:
-        raise RuntimeError("无法计算 Twelve Data 涨跌幅")
-    change_pct = (close - prev_close) / prev_close * 100
-    return latest.get("datetime", ""), close, change_pct
+def _extract_yahoo_change(chart: Dict[str, Any]) -> Tuple[str, float, float]:
+    timestamps = chart.get("timestamp") or []
+    quotes = (chart.get("indicators") or {}).get("quote") or []
+    if not timestamps or not quotes:
+        raise RuntimeError("Yahoo Finance 响应缺少时间序列")
+    closes = quotes[0].get("close") or []
+    pairs = [(ts, close) for ts, close in zip(timestamps, closes) if close is not None]
+    if len(pairs) < 2:
+        raise RuntimeError("Yahoo Finance 未返回足够的收盘价")
+    pairs.sort(key=lambda item: item[0])
+    prev_ts, prev_close = pairs[-2]
+    latest_ts, latest_close = pairs[-1]
+    if not prev_close:
+        raise RuntimeError("Yahoo Finance 前一日收盘价无效")
+    change_pct = (latest_close - prev_close) / prev_close * 100
+    day = datetime.utcfromtimestamp(latest_ts).date().isoformat()
+    return day, latest_close, change_pct
+
+
+def _fetch_hsi_from_yahoo() -> Tuple[List[Dict[str, Any]], str]:
+    chart = _fetch_yahoo_chart("^HSI")
+    day, close, change_pct = _extract_yahoo_change(chart)
+    payload = [
+        {
+            "symbol": HK_MARKET_SYMBOLS[0]["label"],
+            "close": round(close, 2),
+            "change_pct": round(change_pct, 2),
+        }
+    ]
+    message = f"使用 Yahoo Finance ^HSI 数据（{day}）"
+    return payload, message
+
+
+def _fetch_hk_proxy_from_yahoo(symbol: str) -> Tuple[List[Dict[str, Any]], str]:
+    chart = _fetch_yahoo_chart(symbol)
+    day, close, change_pct = _extract_yahoo_change(chart)
+    payload = [
+        {
+            "symbol": HK_MARKET_SYMBOLS[0]["label"],
+            "close": round(close, 2),
+            "change_pct": round(change_pct, 2),
+        }
+    ]
+    message = f"使用 Yahoo Finance {symbol} 代理（{day}）"
+    return payload, message
 
 
 def _fetch_hk_market_snapshot(api_keys: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], FetchStatus]:
-    api_key = api_keys.get("twelve_data")
-    if not api_key:
-        return [], FetchStatus(name="hongkong_market", ok=False, message="缺少 Twelve Data API Key")
+    errors: List[str] = []
 
-    rows: List[Dict[str, Any]] = []
-    for item in HK_MARKET_SYMBOLS:
-        symbol = item["symbol"]
-        label = item.get("label", symbol)
+    for fetcher in (_fetch_hsi_from_stooq, _fetch_hsi_from_yahoo):
         try:
-            series = _fetch_twelvedata_series(symbol, api_key)
-            _, close, change_pct = _extract_twelve_close_change(series)
+            rows, message = fetcher()
+            return rows, FetchStatus(name="hongkong_HSI", ok=True, message=message)
         except Exception as exc:  # noqa: BLE001
-            return [], FetchStatus(name=f"hongkong_{label}", ok=False, message=f"Twelve Data 请求失败: {exc}")
+            errors.append(f"{fetcher.__name__}: {exc}")
 
-        rows.append({"symbol": label, "close": round(close, 2), "change_pct": round(change_pct, 2)})
+    for proxy in HK_PROXY_SYMBOLS:
+        try:
+            rows, message = _fetch_hk_proxy_from_yahoo(proxy)
+            return rows, FetchStatus(name="hongkong_HSI", ok=True, message=message)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{proxy}: {exc}")
 
-    if not rows:
-        return [], FetchStatus(name="hongkong_market", ok=False, message="未获取到港股行情")
-
-    return rows, FetchStatus(name="hongkong_market", ok=True, message="港股行情已获取")
+    detail = "; ".join(errors) if errors else "未知原因"
+    return [], FetchStatus(name="hongkong_HSI", ok=False, message=f"港股行情获取失败: {detail}")
 
 
-def _fetch_fmp_quotes(symbols: List[str], api_key: str) -> Dict[str, Dict[str, Any]]:
-    joined = ",".join(sorted(set(symbols)))
-    url = f"https://financialmodelingprep.com/api/v3/quote/{joined}"
-    payload = _request_json(url, params={"apikey": api_key})
+def _normalize_fmp_payload(payload: Any) -> Dict[str, Dict[str, Any]]:
     if not isinstance(payload, list):
         raise RuntimeError("FMP 响应格式异常")
     results: Dict[str, Dict[str, Any]] = {}
     for item in payload:
-        symbol = item.get("symbol")
+        symbol = item.get("symbol") if isinstance(item, dict) else None
         if symbol:
             results[symbol] = item
+    if not results:
+        raise RuntimeError("FMP 返回为空")
+    return results
+
+
+def _fetch_fmp_quotes_by_path(symbols: List[str], api_key: str) -> Dict[str, Dict[str, Any]]:
+    joined = ",".join(sorted(set(symbols)))
+    url = f"https://financialmodelingprep.com/api/v3/quote/{joined}"
+    payload = _request_json(url, params={"apikey": api_key})
+    return _normalize_fmp_payload(payload)
+
+
+def _fetch_fmp_quotes_by_query(symbols: List[str], api_key: str) -> Dict[str, Dict[str, Any]]:
+    joined = ",".join(sorted(set(symbols)))
+    url = "https://financialmodelingprep.com/api/v3/quote"
+    payload = _request_json(url, params={"symbol": joined, "apikey": api_key})
+    return _normalize_fmp_payload(payload)
+
+
+def _fetch_fmp_quotes_serial(symbols: List[str], api_key: str) -> Dict[str, Dict[str, Any]]:
+    results: Dict[str, Dict[str, Any]] = {}
+    for symbol in sorted(set(symbols)):
+        url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}"
+        payload = _request_json(url, params={"apikey": api_key})
+        normalized = _normalize_fmp_payload(payload)
+        if symbol in normalized:
+            results[symbol] = normalized[symbol]
+        else:
+            # pick the first entry when API normalizes symbols differently
+            first = next(iter(normalized.values()), None)
+            if isinstance(first, dict):
+                results[symbol] = first
+        time.sleep(0.2)
+    if not results:
+        raise RuntimeError("FMP 单支请求未返回数据")
+    return results
+
+
+def _fetch_fmp_quotes(symbols: List[str], api_key: str) -> Tuple[Dict[str, Dict[str, Any]], str]:
+    attempts = [
+        ("fmp_batch_path", _fetch_fmp_quotes_by_path),
+        ("fmp_batch_query", _fetch_fmp_quotes_by_query),
+        ("fmp_serial", _fetch_fmp_quotes_serial),
+    ]
+    errors: List[str] = []
+    for label, fn in attempts:
+        try:
+            return fn(symbols, api_key), label
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{label}: {exc}")
+    raise RuntimeError("; ".join(errors) or "FMP 请求失败")
+
+
+def _fetch_yahoo_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+    joined = ",".join(sorted(set(symbols)))
+    payload = _request_json(
+        "https://query2.finance.yahoo.com/v6/finance/quote",
+        params={"symbols": joined},
+        headers={"Accept": "application/json"},
+    )
+    results: Dict[str, Dict[str, Any]] = {}
+    items = (payload.get("quoteResponse") or {}).get("result") or []
+    for item in items:
+        symbol = item.get("symbol") if isinstance(item, dict) else None
+        if not symbol:
+            continue
+        results[symbol] = {
+            "changesPercentage": item.get("regularMarketChangePercent"),
+            "pe": item.get("trailingPE"),
+            "priceToSalesRatioTTM": item.get("priceToSalesTrailing12Months"),
+            "marketCap": item.get("marketCap"),
+        }
+    if not results:
+        raise RuntimeError("Yahoo Finance 未返回报价")
     return results
 
 
@@ -599,18 +746,29 @@ def _mean(values: List[Optional[float]]) -> Optional[float]:
 
 
 def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, Any], FetchStatus]:
-    api_key = api_keys.get("financial_modeling_prep")
-    if not api_key:
-        return {}, FetchStatus(name="fmp_theme", ok=False, message="缺少 FMP API Key")
-
     all_symbols: List[str] = []
     for symbols in FMP_THEME_SYMBOLS.values():
         all_symbols.extend(symbols)
 
-    try:
-        quotes = _fetch_fmp_quotes(all_symbols, api_key)
-    except Exception as exc:  # noqa: BLE001
-        return {}, FetchStatus(name="fmp_theme", ok=False, message=f"FMP 请求失败: {exc}")
+    quotes: Dict[str, Dict[str, Any]] = {}
+    source = ""
+    errors: List[str] = []
+
+    api_key = api_keys.get("financial_modeling_prep")
+    if api_key:
+        try:
+            quotes, source = _fetch_fmp_quotes(all_symbols, api_key)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"FMP: {exc}")
+
+    if not quotes:
+        try:
+            quotes = _fetch_yahoo_quotes(all_symbols)
+            source = "yahoo"
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"Yahoo: {exc}")
+            detail = "; ".join(errors) if errors else "未知原因"
+            return {}, FetchStatus(name="fmp_theme", ok=False, message=f"主题估值获取失败: {detail}")
 
     themes: Dict[str, Any] = {}
     for theme, symbols in FMP_THEME_SYMBOLS.items():
@@ -636,9 +794,16 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
         }
 
     if not themes:
-        return {}, FetchStatus(name="fmp_theme", ok=False, message="FMP 未返回主题数据")
+        return {}, FetchStatus(name="fmp_theme", ok=False, message="主题估值数据为空")
 
-    return themes, FetchStatus(name="fmp_theme", ok=True, message="FMP 主题估值已获取")
+    if source == "yahoo":
+        message = "主题估值使用 Yahoo Finance 兜底"
+    elif source:
+        message = "FMP 主题估值已获取"
+    else:
+        message = "主题估值已获取"
+
+    return themes, FetchStatus(name="fmp_theme", ok=True, message=message)
 
 
 def _fetch_market_snapshot_real(api_keys: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], FetchStatus]:
@@ -901,14 +1066,12 @@ def run() -> int:
     else:
         market_data = market_data or {}
 
-    hk_status: Optional[FetchStatus] = None
-    if api_keys.get("twelve_data"):
-        hk_rows, hk_status = _fetch_hk_market_snapshot(api_keys)
-        statuses.append(hk_status)
-        if hk_status.ok and market_data is not None:
-            market_data.setdefault("hk_indices", hk_rows)
-    elif api_keys:
-        statuses.append(FetchStatus(name="hongkong_market", ok=False, message="缺少 Twelve Data API Key"))
+    hk_rows, hk_status = _fetch_hk_market_snapshot(api_keys)
+    statuses.append(hk_status)
+    if hk_status.ok and market_data is not None:
+        market_data.setdefault("hk_indices", hk_rows)
+    elif not hk_status.ok:
+        overall_ok = False
 
     theme_metrics: Dict[str, Any] = {}
     if market_data:
@@ -917,14 +1080,12 @@ def run() -> int:
         if ai_perf is not None:
             theme_metrics.setdefault("ai", {})["performance"] = ai_perf
 
-    if api_keys.get("financial_modeling_prep"):
+    if api_keys:
         themes, theme_status = _fetch_theme_metrics_from_fmp(api_keys)
         statuses.append(theme_status)
         if theme_status.ok:
             for name, metrics in themes.items():
                 theme_metrics.setdefault(name, {}).update(metrics)
-    elif api_keys:
-        statuses.append(FetchStatus(name="fmp_theme", ok=False, message="缺少 FMP API Key"))
 
     if market_data is not None and theme_metrics:
         market_data.setdefault("themes", {}).update(theme_metrics)

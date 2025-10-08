@@ -7,6 +7,7 @@ model small so it can be swapped with real data sources later.
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import os
@@ -32,6 +33,7 @@ else:  # pragma: no cover - runtime convenience for direct script execution
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = BASE_DIR / "out"
+STATE_DIR = BASE_DIR / "state"
 
 ALPHA_VANTAGE_SYMBOLS = {
     "SPX": "SPY",  # S&P 500 ETF proxy
@@ -461,7 +463,13 @@ def _fetch_farside_flow_from_api(session: requests.Session) -> float:
 
 def _fetch_farside_latest_flow() -> Tuple[Optional[float], FetchStatus]:
     session = requests.Session()
-    session.headers.update({"User-Agent": BROWSER_USER_AGENT, "Referer": "https://farside.co.uk/"})
+    session.headers.update(
+        {
+            "User-Agent": BROWSER_USER_AGENT,
+            "Referer": "https://farside.co.uk/",
+            "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
+        }
+    )
     errors: List[str] = []
     for fetcher, label in ((
         _fetch_farside_flow_from_html,
@@ -690,6 +698,7 @@ def _fetch_hk_market_snapshot(api_keys: Dict[str, Any]) -> Tuple[List[Dict[str, 
 
 
 FMP_STABLE_URL = "https://financialmodelingprep.com/stable/quote"
+FMP_V3_URL = "https://financialmodelingprep.com/api/v3/quote"
 FMP_WARMUP_URL = "https://financialmodelingprep.com/"
 FMP_BATCH_SIZE = 50
 FMP_MAX_RETRIES = 3
@@ -740,8 +749,18 @@ def _request_fmp_chunk(session: requests.Session, symbols: List[str], api_key: s
             return _normalize_fmp_payload(response.json())
         except ValueError as exc:  # JSON decode error
             raise RuntimeError("FMP 响应解析失败") from exc
-    if response.status_code in {403, 429}:
+    if response.status_code == 429:
         raise _FMPThrottledError(f"FMP 限流: HTTP {response.status_code}")
+    if response.status_code in {402, 403}:
+        fallback = session.get(FMP_V3_URL, params=params, timeout=REQUEST_TIMEOUT)
+        try:
+            fallback.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"FMP v3 请求失败: {exc}") from exc
+        try:
+            return _normalize_fmp_payload(fallback.json())
+        except ValueError as exc:  # JSON decode error
+            raise RuntimeError("FMP v3 响应解析失败") from exc
     try:
         response.raise_for_status()
     except Exception as exc:  # noqa: BLE001
@@ -788,7 +807,11 @@ def _fetch_yahoo_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
     payload = _request_json(
         "https://query2.finance.yahoo.com/v6/finance/quote",
         params={"symbols": joined},
-        headers={"Accept": "application/json"},
+        headers={
+            "Accept": "application/json",
+            "User-Agent": BROWSER_USER_AGENT,
+            "Referer": "https://finance.yahoo.com/",
+        },
     )
     results: Dict[str, Dict[str, Any]] = {}
     items = (payload.get("quoteResponse") or {}).get("result") or []
@@ -1094,9 +1117,38 @@ def _simulate_events(trading_day: str) -> Tuple[List[Dict[str, Any]], FetchStatu
     return events, status
 
 
-def run() -> int:
+def run(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--force", action="store_true", help="强制刷新当日数据")
+    args = parser.parse_args(argv)
+
     _ensure_out_dir()
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+
     trading_day = _current_trading_day()
+
+    raw_market_path = OUT_DIR / "raw_market.json"
+    raw_events_path = OUT_DIR / "raw_events.json"
+    status_path = OUT_DIR / "etl_status.json"
+    marker = STATE_DIR / f"fetch_{trading_day}"
+
+    if not args.force:
+        skip_run = marker.exists()
+        if skip_run and not (raw_market_path.exists() and raw_events_path.exists() and status_path.exists()):
+            skip_run = False
+        if skip_run and status_path.exists():
+            try:
+                with status_path.open("r", encoding="utf-8") as fh:
+                    status_payload = json.load(fh)
+            except Exception:  # noqa: BLE001 - ignore corrupt status cache
+                skip_run = False
+            else:
+                if status_payload.get("date") != trading_day:
+                    skip_run = False
+        if skip_run:
+            print("检测到当日数据，跳过抓取。用 --force 可强制刷新。")
+            return 0
+
     print(f"开始抓取 {trading_day} 的数据……")
 
     api_keys, ai_feeds, arxiv_params, arxiv_throttle = _load_configuration()
@@ -1112,8 +1164,8 @@ def run() -> int:
     statuses: List[FetchStatus] = []
     overall_ok = True
 
-    raw_market_path = OUT_DIR / "raw_market.json"
     previous_sentiment: Dict[str, Any] = {}
+    previous_btc: Dict[str, Any] = {}
     if raw_market_path.exists():
         try:
             with raw_market_path.open("r", encoding="utf-8") as f_prev:
@@ -1124,6 +1176,9 @@ def run() -> int:
             prev_sent = previous_payload.get("sentiment")
             if isinstance(prev_sent, dict):
                 previous_sentiment = prev_sent
+            prev_btc = previous_payload.get("btc")
+            if isinstance(prev_btc, dict):
+                previous_btc = prev_btc
 
     market_data, status = _fetch_market_snapshot_real(api_keys)
     statuses.append(status)
@@ -1199,6 +1254,20 @@ def run() -> int:
 
     etf_flow, flow_status = _fetch_farside_latest_flow()
     statuses.append(flow_status)
+    if not flow_status.ok:
+        previous_flow = None
+        if isinstance(previous_btc, dict):
+            previous_flow = _safe_float(previous_btc.get("etf_net_inflow_musd"))
+        if previous_flow is not None:
+            etf_flow = previous_flow
+            statuses.append(
+                FetchStatus(
+                    name="btc_etf_flow_fallback",
+                    ok=True,
+                    message="使用上一期 ETF 净流入",
+                )
+            )
+            overall_ok = False
 
     btc_data: Dict[str, Any]
     if spot_price is not None and funding_rate is not None and basis is not None and etf_flow is not None:
@@ -1247,10 +1316,6 @@ def run() -> int:
         events.sort(key=lambda item: (item.get("date"), item.get("impact", "")))
         events = events[:MAX_EVENT_ITEMS]
 
-    raw_market_path = OUT_DIR / "raw_market.json"
-    raw_events_path = OUT_DIR / "raw_events.json"
-    status_path = OUT_DIR / "etl_status.json"
-
     market_payload: Dict[str, Any] = {
         "market": market_data,
         "btc": btc_data,
@@ -1277,6 +1342,8 @@ def run() -> int:
 
     if not status_payload["ok"]:
         print("部分数据抓取失败，后续流程将触发降级模式。", file=sys.stderr)
+
+    marker.touch(exist_ok=True)
 
     print("原始数据已输出到 out/ 目录。")
     return 0

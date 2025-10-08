@@ -2,15 +2,16 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from html.parser import HTMLParser
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import requests
 
-USER_AGENT = "daily-messenger-bot/0.1"
-REQUEST_TIMEOUT = 15
-URL = "https://www.aaii.com/sentimentsurvey/sent_results"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+REQUEST_TIMEOUT = 20
+RSS_URL = "https://insights.aaii.com/feed"
 
 
 @dataclass
@@ -20,124 +21,92 @@ class FetchStatus:
     message: str = ""
 
 
-class _TableCollector(HTMLParser):
-    """Extract tables from AAII HTML."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._in_table = False
-        self._capture = False
-        self._buffer: List[str] = []
-        self._current_row: List[str] = []
-        self.tables: List[List[List[str]]] = []
-
-    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:  # type: ignore[override]
-        if tag == "table":
-            self._in_table = True
-            self.tables.append([])
-        elif self._in_table and tag in {"tr"}:
-            self._current_row = []
-        elif self._in_table and tag in {"td", "th"}:
-            self._capture = True
-            self._buffer = []
-
-    def handle_endtag(self, tag: str) -> None:  # type: ignore[override]
-        if not self._in_table:
-            return
-        if tag in {"td", "th"} and self._capture:
-            text = "".join(self._buffer).strip()
-            self._current_row.append(text)
-            self._capture = False
-        elif tag == "tr" and self._current_row:
-            self.tables[-1].append(self._current_row)
-            self._current_row = []
-        elif tag == "table":
-            self._in_table = False
-
-    def handle_data(self, data: str) -> None:  # type: ignore[override]
-        if self._capture:
-            self._buffer.append(data)
+def _init_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+    return session
 
 
-def _normalize_header(value: str) -> str:
-    return "".join(ch.lower() for ch in value if ch.isalnum())
-
-
-def _parse_float(value: str) -> Optional[float]:
-    text = value.strip().replace("%", "")
-    if not text:
+def _resolve_latest_story(session: requests.Session) -> Optional[str]:
+    try:
+        response = session.get(RSS_URL, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+    except Exception:  # noqa: BLE001
         return None
     try:
-        return float(text)
+        root = ET.fromstring(response.text)
+    except ET.ParseError:
+        return None
+    channel = root.find("channel")
+    if channel is None:
+        return None
+    for item in channel.findall("item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        if not title or not link:
+            continue
+        if "Sentiment Survey" in title:
+            return link
+    return None
+
+
+def _parse_article(html: str) -> Optional[Dict[str, float]]:
+    pattern = re.compile(
+        r"(?is)Bullish[^0-9]*([0-9]+(?:\.[0-9]+)?)%.*?Neutral[^0-9]*([0-9]+(?:\.[0-9]+)?)%.*?Bearish[^0-9]*([0-9]+(?:\.[0-9]+)?)%"
+    )
+    match = pattern.search(html)
+    if not match:
+        return None
+    try:
+        bull, neutral, bear = (float(match.group(i)) for i in range(1, 4))
     except ValueError:
         return None
+    return {
+        "bullish_pct": round(bull, 2),
+        "neutral_pct": round(neutral, 2),
+        "bearish_pct": round(bear, 2),
+        "bull_bear_spread": round(bull - bear, 2),
+    }
 
 
-def _parse_date(value: str) -> Optional[str]:
-    candidates = ["%B %d, %Y", "%b %d, %Y", "%m/%d/%Y", "%Y-%m-%d"]
-    text = value.strip()
-    for fmt in candidates:
-        try:
-            return dt.datetime.strptime(text, fmt).date().isoformat()
-        except ValueError:
-            continue
-    return None
-
-
-def _select_table(tables: List[List[List[str]]]) -> Optional[List[List[str]]]:
-    for table in tables:
-        if not table:
-            continue
-        header = table[0]
-        normalized = {_normalize_header(col) for col in header}
-        required = {"bullish", "neutral", "bearish"}
-        if required.issubset(normalized):
-            return table
-    return None
+def _parse_week(html: str) -> Optional[str]:
+    date_pattern = re.compile(
+        r"(?i)(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}"
+    )
+    match = date_pattern.search(html)
+    if not match:
+        return None
+    try:
+        parsed = dt.datetime.strptime(match.group(0), "%B %d, %Y")
+    except ValueError:
+        return None
+    return parsed.date().isoformat()
 
 
 def fetch() -> Tuple[Dict[str, Dict[str, object]], FetchStatus]:
-    headers = {"User-Agent": USER_AGENT}
+    session = _init_session()
+    link = _resolve_latest_story(session)
+    if not link:
+        return {}, FetchStatus(name="aaii_sentiment", ok=False, message="未能定位最新情绪文章")
+
     try:
-        response = requests.get(URL, headers=headers, timeout=REQUEST_TIMEOUT)
+        response = session.get(link, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
     except Exception as exc:  # noqa: BLE001
         return {}, FetchStatus(name="aaii_sentiment", ok=False, message=f"AAII 请求失败: {exc}")
 
-    parser = _TableCollector()
-    parser.feed(response.text)
-    table = _select_table(parser.tables)
-    if not table or len(table) <= 1:
-        return {}, FetchStatus(name="aaii_sentiment", ok=False, message="未找到 AAII 情绪表格")
+    metrics = _parse_article(response.text)
+    if metrics is None:
+        return {}, FetchStatus(name="aaii_sentiment", ok=False, message="AAII 页面缺少情绪百分比")
 
-    header = table[0]
-    rows = table[1:]
-    header_map = {_normalize_header(col): idx for idx, col in enumerate(header)}
+    week = _parse_week(response.text) or dt.date.today().isoformat()
 
-    latest_row = next((row for row in rows if len(row) >= len(header)), None)
-    if latest_row is None:
-        return {}, FetchStatus(name="aaii_sentiment", ok=False, message="AAII 表格没有有效数据行")
-
-    bull = _parse_float(latest_row[header_map["bullish"]])
-    neutral = _parse_float(latest_row[header_map["neutral"]])
-    bear = _parse_float(latest_row[header_map["bearish"]])
-
-    if bull is None or neutral is None or bear is None:
-        return {}, FetchStatus(name="aaii_sentiment", ok=False, message="AAII 数据缺少百分比")
-
-    date_key = next((key for key in ("reporteddate", "week", "date") if key in header_map), None)
-    week_value = latest_row[header_map[date_key]] if date_key else ""
-    week = _parse_date(week_value) or week_value[:10] or dt.date.today().isoformat()
-
-    spread = round(bull - bear, 2)
     payload: Dict[str, Dict[str, object]] = {
         "aaii": {
             "week": week,
-            "bullish_pct": round(bull, 2),
-            "neutral_pct": round(neutral, 2),
-            "bearish_pct": round(bear, 2),
-            "bull_bear_spread": spread,
-            "source": "aaii_sentiment_survey",
+            **metrics,
+            "source": "aaii_insights_substack",
+            "link": link,
         }
     }
 

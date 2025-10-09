@@ -116,6 +116,8 @@ CANONICAL_API_KEYS = (
     "financial_modeling_prep",
     "trading_economics",
     "finnhub",
+    "sosovalue",
+    "coinglass",
 )
 
 
@@ -237,6 +239,20 @@ def _safe_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_api_key(value: Any) -> Optional[str]:
+    if isinstance(value, str):
+        token = value.strip()
+        return token or None
+    if isinstance(value, dict):
+        for field in ("api_key", "key", "token", "secret"):
+            candidate = value.get(field)
+            if isinstance(candidate, str):
+                token = candidate.strip()
+                if token:
+                    return token
+    return None
 
 
 def _rss_text(node: ET.Element, *paths: str) -> str:
@@ -429,6 +445,155 @@ def _latest_date(rows: Iterable[List[str]]) -> Optional[List[str]]:
     return parsed[0][1]
 
 
+SOSOVALUE_INFLOW_URL = "https://api.sosovalue.xyz/openapi/v2/etf/historicalInflowChart"
+COINGLASS_ETF_ENDPOINTS = (
+    "https://open-api-v4.coinglass.com/api/bitcoin/etf/flow-history",
+    "https://open-api-v1.coinglass.com/api/bitcoin/etf/flow-history",
+)
+
+
+def _fetch_sosovalue_latest_flow(api_key: str) -> Tuple[Optional[float], FetchStatus]:
+    headers = {
+        "User-Agent": BROWSER_USER_AGENT,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "x-soso-api-key": api_key,
+    }
+    body = {"type": "us-btc-spot"}
+    try:
+        response = requests.post(
+            SOSOVALUE_INFLOW_URL,
+            json=body,
+            headers=headers,
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:  # noqa: BLE001
+        return None, FetchStatus(name="btc_etf_flow_sosovalue", ok=False, message=f"SoSoValue 请求失败: {exc}")
+
+    code = payload.get("code")
+    if code not in (0, "0", 200, "200", None):
+        message = payload.get("msg") or payload.get("message") or f"code={code}"
+        return None, FetchStatus(name="btc_etf_flow_sosovalue", ok=False, message=f"SoSoValue 返回错误: {message}")
+
+    data = payload.get("data")
+    records: List[Dict[str, Any]] = []
+    if isinstance(data, list):
+        records = [item for item in data if isinstance(item, dict)]
+    elif isinstance(data, dict):
+        for key in ("result", "list", "items", "data", "rows"):
+            candidate = data.get(key)
+            if isinstance(candidate, list):
+                records = [item for item in candidate if isinstance(item, dict)]
+                break
+        if not records and data:
+            records = [data]
+
+    latest_amount: Optional[float] = None
+    latest_day = ""
+    latest_ts: Optional[datetime] = None
+    for item in records:
+        day_value = item.get("date") or item.get("day")
+        amount_value = (
+            item.get("totalNetInflow")
+            or item.get("netInflow")
+            or item.get("netflow")
+            or item.get("netFlow")
+        )
+        amount = _safe_float(amount_value)
+        if not day_value or amount is None:
+            continue
+        day_text = str(day_value)[:10]
+        try:
+            parsed_day = datetime.strptime(day_text, "%Y-%m-%d")
+        except ValueError:
+            continue
+        if latest_ts is None or parsed_day > latest_ts:
+            latest_ts = parsed_day
+            latest_day = parsed_day.strftime("%Y-%m-%d")
+            latest_amount = amount
+
+    if latest_amount is None or not latest_day:
+        return None, FetchStatus(name="btc_etf_flow_sosovalue", ok=False, message="SoSoValue 响应缺少有效数据")
+
+    net_musd = latest_amount / 1_000_000.0
+    return net_musd, FetchStatus(name="btc_etf_flow_sosovalue", ok=True, message=f"SoSoValue ETF 净流入已获取（{latest_day}）")
+
+
+def _fetch_coinglass_latest_flow(api_key: str) -> Tuple[Optional[float], FetchStatus]:
+    headers = {
+        "User-Agent": BROWSER_USER_AGENT,
+        "Accept": "application/json",
+        "coinglassSecret": api_key,
+    }
+    params = {"page": 1, "size": 10}
+    errors: List[str] = []
+    for url in COINGLASS_ETF_ENDPOINTS:
+        try:
+            response = requests.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{url}: {exc}")
+            continue
+
+        code = payload.get("code")
+        if code not in (0, "0", 200, "200", None):
+            message = payload.get("msg") or payload.get("message") or f"code={code}"
+            errors.append(f"{url}: {message}")
+            continue
+
+        data = payload.get("data")
+        records: List[Dict[str, Any]] = []
+        if isinstance(data, list):
+            records = [item for item in data if isinstance(item, dict)]
+        elif isinstance(data, dict):
+            for key in ("list", "rows", "result", "items", "data"):
+                candidate = data.get(key)
+                if isinstance(candidate, list):
+                    records = [item for item in candidate if isinstance(item, dict)]
+                    break
+            if not records and data:
+                records = [data]
+
+        latest_amount: Optional[float] = None
+        latest_day = ""
+        latest_ts: Optional[datetime] = None
+        for item in records:
+            day_value = item.get("date") or item.get("day")
+            amount_value = (
+                item.get("netFlow")
+                or item.get("netflow")
+                or item.get("net_inflow")
+                or item.get("netInflow")
+                or item.get("totalNetInflow")
+                or item.get("totalNetFlow")
+            )
+            amount = _safe_float(amount_value)
+            if not day_value or amount is None:
+                continue
+            day_text = str(day_value)[:10]
+            try:
+                parsed_day = datetime.strptime(day_text, "%Y-%m-%d")
+            except ValueError:
+                continue
+            if latest_ts is None or parsed_day > latest_ts:
+                latest_ts = parsed_day
+                latest_day = parsed_day.strftime("%Y-%m-%d")
+                latest_amount = amount
+
+        if latest_amount is None or not latest_day:
+            errors.append(f"{url}: 缺少有效数据")
+            continue
+
+        net_amount = latest_amount / 1_000_000.0 if abs(latest_amount) > 100000 else latest_amount
+        return net_amount, FetchStatus(name="btc_etf_flow_coinglass", ok=True, message=f"CoinGlass ETF 净流入已获取（{latest_day}）")
+
+    detail = "; ".join(errors) if errors else "未知原因"
+    return None, FetchStatus(name="btc_etf_flow_coinglass", ok=False, message=f"CoinGlass 请求失败: {detail}")
+
+
 FARSIDE_PAGE_URL = "https://farside.co.uk/bitcoin-etf-flow-all-data/"
 
 
@@ -494,6 +659,43 @@ def _fetch_farside_latest_flow() -> Tuple[Optional[float], FetchStatus]:
             errors.append(f"{label}: {exc}")
     detail = "; ".join(errors) if errors else "未知原因"
     return None, FetchStatus(name="btc_etf_flow", ok=False, message=f"Farside 请求失败: {detail}")
+
+
+def _fetch_btc_etf_flow(api_keys: Dict[str, Any]) -> Tuple[Optional[float], FetchStatus]:
+    attempts: List[str] = []
+
+    sosovalue_key = _coerce_api_key(api_keys.get("sosovalue"))
+    if sosovalue_key:
+        amount, status = _fetch_sosovalue_latest_flow(sosovalue_key)
+        if status.ok and amount is not None:
+            message = status.message
+            if attempts:
+                message += f"；此前失败: {', '.join(attempts)}"
+            return amount, FetchStatus(name="btc_etf_flow", ok=True, message=message)
+        attempts.append(status.message or "SoSoValue 获取失败")
+
+    coinglass_key = _coerce_api_key(api_keys.get("coinglass"))
+    if coinglass_key:
+        amount, status = _fetch_coinglass_latest_flow(coinglass_key)
+        if status.ok and amount is not None:
+            message = status.message
+            if attempts:
+                message += f"；此前失败: {', '.join(attempts)}"
+            return amount, FetchStatus(name="btc_etf_flow", ok=True, message=message)
+        attempts.append(status.message or "CoinGlass 获取失败")
+
+    amount, status = _fetch_farside_latest_flow()
+    if status.ok and amount is not None:
+        message = status.message
+        if attempts:
+            message += f"；已跳过 {', '.join(attempts)}"
+        return amount, FetchStatus(name="btc_etf_flow", ok=True, message=message)
+
+    if status.message:
+        attempts.append(status.message)
+    detail = "；".join(filter(None, attempts))
+    message = detail or "ETF 净流入获取失败"
+    return None, FetchStatus(name="btc_etf_flow", ok=False, message=message)
 
 
 def _fetch_coinbase_spot() -> Tuple[Optional[float], FetchStatus]:
@@ -944,6 +1146,31 @@ def _fetch_yahoo_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
     raise RuntimeError(f"Yahoo Finance 未返回报价: {last_error or 'empty'}")
 
 
+def _fetch_price_only_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+    results: Dict[str, Dict[str, Any]] = {}
+    for symbol in symbols:
+        snapshot: Optional[_QuoteSnapshot] = None
+        try:
+            snapshot = _fetch_quote_from_yahoo(symbol)
+        except Exception:  # noqa: BLE001
+            try:
+                snapshot = _fetch_quote_from_stooq(symbol)
+            except Exception:  # noqa: BLE001
+                snapshot = None
+        if not snapshot:
+            continue
+        results[symbol] = {
+            "changesPercentage": snapshot.change_pct,
+            "pe": None,
+            "priceToSalesRatioTTM": None,
+            "marketCap": None,
+        }
+        time.sleep(0.2)
+    if not results:
+        raise RuntimeError("price-only fallback 无法获取任何报价")
+    return results
+
+
 def _mean(values: List[Optional[float]]) -> Optional[float]:
     filtered = [v for v in values if v is not None]
     if not filtered:
@@ -973,8 +1200,13 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
             source = "yahoo"
         except Exception as exc:  # noqa: BLE001
             errors.append(f"Yahoo: {exc}")
-            detail = "; ".join(errors) if errors else "未知原因"
-            return {}, FetchStatus(name="fmp_theme", ok=False, message=f"主题估值获取失败: {detail}")
+            try:
+                quotes = _fetch_price_only_quotes(all_symbols)
+                source = "price_only"
+            except Exception as fallback_exc:  # noqa: BLE001
+                errors.append(f"price_only: {fallback_exc}")
+                detail = "; ".join(errors) if errors else "未知原因"
+                return {}, FetchStatus(name="fmp_theme", ok=False, message=f"主题估值获取失败: {detail}")
 
     themes: Dict[str, Any] = {}
     for theme, symbols in FMP_THEME_SYMBOLS.items():
@@ -1004,6 +1236,8 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
 
     if source == "yahoo":
         message = "主题估值使用 Yahoo Finance 兜底"
+    elif source == "price_only":
+        message = "主题估值使用价格兜底，PE/PS/市值为空"
     elif source:
         message = "FMP 主题估值已获取"
     else:
@@ -1414,7 +1648,7 @@ def run(argv: Optional[List[str]] = None) -> int:
     else:
         statuses.append(FetchStatus(name="okx_basis", ok=False, message="缺少现货价格，无法计算基差"))
 
-    etf_flow, flow_status = _fetch_farside_latest_flow()
+    etf_flow, flow_status = _fetch_btc_etf_flow(api_keys)
     statuses.append(flow_status)
     if not flow_status.ok:
         previous_flow = None

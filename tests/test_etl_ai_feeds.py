@@ -138,8 +138,8 @@ def test_run_includes_ai_sources(tmp_path, monkeypatch, load_run_fetch):
     )
     monkeypatch.setattr(
         module,
-        "_fetch_farside_latest_flow",
-        lambda: (12.5, module.FetchStatus(name="btc_etf_flow", ok=True, message="ok")),
+        "_fetch_btc_etf_flow",
+        lambda api_keys: (12.5, module.FetchStatus(name="btc_etf_flow", ok=True, message="ok")),
     )
     monkeypatch.setattr(
         module,
@@ -196,7 +196,7 @@ def test_run_includes_ai_sources(tmp_path, monkeypatch, load_run_fetch):
         ),
     )
 
-    result = module.run()
+    result = module.run([])
     assert result == 0
 
     raw_events_path = out_dir / "raw_events.json"

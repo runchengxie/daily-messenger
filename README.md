@@ -124,16 +124,23 @@ uv run python digest/make_daily.py
 执行完成后，`out/` 目录包含：
 
 * `raw_market.json`、`raw_events.json`、`etl_status.json`（抓取详情与状态）
+
 * `scores.json`、`actions.json`（主题总分、指标拆解与建议）
+
 * `index.html`、`YYYY-MM-DD.html`（静态日报页面）
+
 * `digest_summary.txt`（文本摘要，多用于飞书或邮件）
+
 * `digest_card.json`（飞书互动卡片结构体）
 
 ## 幂等控制与降级提示
 
 * `state/fetch_YYYY-MM-DD`：标记当日 ETL 已完成，避免重复访问数据源。
+
 * `state/done_YYYY-MM-DD`：标记评分完成，若需重跑使用 `--force` 删除标记。
+
 * `state/sentiment_history.json`：累积 Put/Call、AAII 等情绪序列，用于平滑得分。
+
 * 降级触发条件：`out/etl_status.json` 中任一 `ok=false`、`scores.json` 标记 `degraded=true`、命令行传入 `--degraded`。降级状态会在网页、摘要与卡片中显著提示。
 
 ## 飞书推送
@@ -159,8 +166,11 @@ uv run ruff check .           # 代码风格检查（可附加 --fix 自动修�
 测试重点包括：
 
 * ETL 对 RSS/Atom 解析与降级分支的回退行为（`tests/test_etl_ai_feeds.py`）。
+
 * 情绪抓取器与聚合适配器的容错能力（`tests/test_sentiment_fetchers.py`）。
+
 * 主题得分、建议生成的阈值逻辑（`tests/test_scoring.py`）。
+
 * 报告渲染、摘要裁剪与卡片生成的端到端校验（`tests/test_digest.py`）。
 
 新增测试覆盖 `digest.run()` 的输出产物与降级标记，便于回归验证模板或链接调整。
@@ -168,11 +178,17 @@ uv run ruff check .           # 代码风格检查（可附加 --fix 自动修�
 ## 自动化运维
 
 * GitHub Actions 工作流：`.github/workflows/daily.yml`。
+
   * 通过 `astral-sh/setup-uv` 安装依赖，直接读取 `pyproject.toml` 与 `uv.lock`。
+
   * 使用 `uv run` 执行 ETL → 评分 → 渲染 → 推送，全程复用本地一致的隔离环境。
+
   * 在美西时间 07:00–07:10 的时间窗外自动跳过，以避免非交易时段误触发。
+
   * 产出 `out/` 目录并上传至 GitHub Pages，同时根据 `FetchStatus` 决定是否附带降级提醒。
+
 * 失败排查：检查工作流日志中的 `etl_status.json` 摘要、飞书推送步骤的输出，以及 GitHub Pages 产物是否生成。
+
 * 如需在工作日外试跑，可使用 `workflow_dispatch` 手动触发。
 
 ## 该项目涉及的API数据服务的限额（以免费/入门为主）

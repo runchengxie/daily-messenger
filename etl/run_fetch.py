@@ -468,8 +468,12 @@ def _fetch_farside_latest_flow() -> Tuple[Optional[float], FetchStatus]:
             "User-Agent": BROWSER_USER_AGENT,
             "Referer": "https://farside.co.uk/",
             "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9,zh;q=0.8",
         }
     )
+    cookie = os.getenv("FARSIDE_COOKIES")
+    if cookie:
+        session.headers.update({"Cookie": cookie})
     errors: List[str] = []
     for fetcher, label in ((
         _fetch_farside_flow_from_html,
@@ -804,30 +808,47 @@ def _fetch_fmp_quotes(symbols: List[str], api_key: str) -> Tuple[Dict[str, Dict[
 
 def _fetch_yahoo_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
     joined = ",".join(sorted(set(symbols)))
-    payload = _request_json(
+    urls = [
+        "https://query2.finance.yahoo.com/v10/finance/quote",
+        "https://query1.finance.yahoo.com/v10/finance/quote",
+        "https://query2.finance.yahoo.com/v7/finance/quote",
+        "https://query1.finance.yahoo.com/v7/finance/quote",
         "https://query2.finance.yahoo.com/v6/finance/quote",
-        params={"symbols": joined},
-        headers={
-            "Accept": "application/json",
-            "User-Agent": BROWSER_USER_AGENT,
-            "Referer": "https://finance.yahoo.com/",
-        },
-    )
-    results: Dict[str, Dict[str, Any]] = {}
-    items = (payload.get("quoteResponse") or {}).get("result") or []
-    for item in items:
-        symbol = item.get("symbol") if isinstance(item, dict) else None
-        if not symbol:
+    ]
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": BROWSER_USER_AGENT,
+        "Referer": "https://finance.yahoo.com/",
+        "Accept-Language": "en-US,en;q=0.9,zh;q=0.8",
+        "Connection": "keep-alive",
+    }
+    last_error: Optional[Exception] = None
+    for url in urls:
+        try:
+            payload = _request_json(url, params={"symbols": joined}, headers=headers)
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
             continue
-        results[symbol] = {
-            "changesPercentage": item.get("regularMarketChangePercent"),
-            "pe": item.get("trailingPE"),
-            "priceToSalesRatioTTM": item.get("priceToSalesTrailing12Months"),
-            "marketCap": item.get("marketCap"),
-        }
-    if not results:
-        raise RuntimeError("Yahoo Finance 未返回报价")
-    return results
+
+        items = (payload.get("quoteResponse") or {}).get("result") or []
+        if not items:
+            last_error = RuntimeError("empty response")
+            continue
+
+        results: Dict[str, Dict[str, Any]] = {}
+        for item in items:
+            symbol = item.get("symbol") if isinstance(item, dict) else None
+            if not symbol:
+                continue
+            results[symbol] = {
+                "changesPercentage": item.get("regularMarketChangePercent"),
+                "pe": item.get("trailingPE"),
+                "priceToSalesRatioTTM": item.get("priceToSalesTrailing12Months"),
+                "marketCap": item.get("marketCap"),
+            }
+        if results:
+            return results
+    raise RuntimeError(f"Yahoo Finance 未返回报价: {last_error or 'empty'}")
 
 
 def _mean(values: List[Optional[float]]) -> Optional[float]:

@@ -1,5 +1,8 @@
+import json
 import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -18,6 +21,10 @@ def _theme(label: str, total: float) -> dict:
             "event": 50,
         },
     }
+
+
+def _write_json(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 def test_build_summary_lines_limits_length():
@@ -39,3 +46,94 @@ def test_build_card_payload_contains_summary_and_url():
     assert payload["header"]["title"]["content"] == "内参"
     assert payload["elements"][0]["text"]["content"].startswith("AI 总分 82")
     assert payload["elements"][1]["actions"][0]["url"] == "https://example.com/report.html"
+
+
+def test_run_generates_digest_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(digest, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(digest, "TEMPLATE_DIR", tmp_path / "templates")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "acme/daily-messenger")
+
+    scores_payload = {
+        "date": "2024-04-01",
+        "degraded": False,
+        "themes": [
+            {
+                "label": "AI",
+                "name": "ai",
+                "total": 82.3,
+                "breakdown": {
+                    "fundamental": 78.0,
+                    "valuation": 65.0,
+                    "sentiment": 58.0,
+                    "liquidity": 62.0,
+                    "event": 55.0,
+                },
+            }
+        ],
+        "events": [
+            {
+                "title": "收益季焦点",
+                "date": "2024-04-02",
+                "impact": "high",
+            }
+        ],
+    }
+    actions_payload = {
+        "items": [
+            {"action": "增持", "name": "AI", "reason": "总分高于增持阈值"},
+        ]
+    }
+
+    _write_json(tmp_path / "scores.json", scores_payload)
+    _write_json(tmp_path / "actions.json", actions_payload)
+
+    exit_code = digest.run([])
+
+    assert exit_code == 0
+    assert (tmp_path / "index.html").exists()
+    assert (tmp_path / "2024-04-01.html").exists()
+
+    summary_text = (tmp_path / "digest_summary.txt").read_text(encoding="utf-8")
+    assert "AI 总分 82" in summary_text
+
+    card_payload = json.loads((tmp_path / "digest_card.json").read_text(encoding="utf-8"))
+    assert card_payload["elements"][1]["actions"][0]["url"] == "https://acme.github.io/daily-messenger/2024-04-01.html"
+
+
+def test_run_with_degraded_flag_marks_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(digest, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(digest, "TEMPLATE_DIR", tmp_path / "templates")
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+
+    scores_payload = {
+        "date": "2024-04-03",
+        "degraded": False,
+        "themes": [
+            {
+                "label": "BTC",
+                "name": "btc",
+                "total": 55.0,
+                "breakdown": {
+                    "fundamental": 50.0,
+                    "valuation": 52.0,
+                    "sentiment": 48.0,
+                    "liquidity": 57.0,
+                    "event": 45.0,
+                },
+            }
+        ],
+        "events": [],
+    }
+    actions_payload = {"items": []}
+
+    _write_json(tmp_path / "scores.json", scores_payload)
+    _write_json(tmp_path / "actions.json", actions_payload)
+
+    exit_code = digest.run(["--degraded"])
+
+    assert exit_code == 0
+    summary_text = (tmp_path / "digest_summary.txt").read_text(encoding="utf-8")
+    assert summary_text.startswith("⚠️ 数据延迟")
+
+    card_payload = json.loads((tmp_path / "digest_card.json").read_text(encoding="utf-8"))
+    assert "（数据延迟）" in card_payload["header"]["title"]["content"]

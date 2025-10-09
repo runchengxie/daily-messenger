@@ -4,13 +4,13 @@
 
 ## 项目概览
 
-* **场景**：为内部投研或舆情团队每天生成盘前情报，GitHub Actions 按工作日 UTC 14:00 触发，产物发布到 GitHub Pages，并可同步推送飞书群机器人。
+* 场景：为内部投研或舆情团队每天生成盘前情报，GitHub Actions 按工作日 UTC 14:00 触发，产物发布到 GitHub Pages，并可同步推送飞书群机器人。
 
-* **语言与运行时**：Python 3.11；默认使用 [uv](https://github.com/astral-sh/uv) 管理依赖和执行命令。
+* 语言与运行时：Python 3.11；默认使用 [uv](https://github.com/astral-sh/uv) 管理依赖和执行命令。
 
-* **输入**：多家行情/宏观/情绪数据提供商的 HTTP API、RSS 与 Atom Feed；凭证通过 `API_KEYS` 注入。
+* 输入：多家行情/宏观/情绪数据提供商的 HTTP API、RSS 与 Atom Feed；凭证通过 `API_KEYS` 注入。
 
-* **输出**：`out/` 目录下的结构化 JSON、HTML 报告、摘要文本与飞书互动卡片。
+* 输出：`out/` 目录下的结构化 JSON、HTML 报告、摘要文本与飞书互动卡片。
 
 ## 项目运行流程图
 
@@ -175,10 +175,12 @@ uv run ruff check .           # 代码风格检查（可附加 --fix 自动修�
 * 失败排查：检查工作流日志中的 `etl_status.json` 摘要、飞书推送步骤的输出，以及 GitHub Pages 产物是否生成。
 * 如需在工作日外试跑，可使用 `workflow_dispatch` 手动触发。
 
-## 常见问题
+## 该项目涉及的API数据服务的限额（以免费/入门为主）
 
-* **报错 `缺少输入文件`**：确认已运行 `etl/run_fetch.py` 与 `scoring/run_scores.py`，或检查 `out/` 是否映射到持久化存储。
-* **API 限频或超时**：查看 `out/etl_status.json` 的失败条目；必要时增加 `config/weights.yml` 中对该数据源的权重降级方案。
-* **飞书推送失败**：确保 `FEISHU_WEBHOOK`、`FEISHU_SECRET` 正确，且机器人已开启自定义应用权限。
-
-欢迎在 `project_tools/` 中扩展校验或打包脚本，并在新增数据源时更新本文档与对应测试。
+| 提供商                               | 常见免费/入门限频                                                                        | 备注                                                                                  |
+| --------------------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| **Alpha Vantage**                 | 免费：**每天 25 次**（多数数据集可用）。                                                         | 官方从“5/分 + 500/天”时代进化到了按天配额，分钟层面仍会节流。([alphavantage.co][1]) |
+| **Twelve Data**                   | Basic：**8 credits/分钟，800 credits/天**。                                            | 大多端点按 1 请求=1 credit 计数，具体以端点为准。([support.twelvedata.com][2])                        |
+| **Financial Modeling Prep (FMP)** | Free：**250 次/天**；付费档到 **300–3000 次/分钟**。                                         | 定价页写得最清楚；另外还有按带宽计费的限制。([FinancialModelingPrep][3])                                  |
+| **Trading Economics**             | **1 请求/秒**的通用限制；历史数据单次上限 10,000 行，日历 1,000 行。                                    | 没写日配额。([docs.tradingeconomics.com][4])                                      |
+| **Finnhub**                       | 官方公开页没写死数字；社区与 SDK 常按**约 60 次/分钟**并同时尊重**每秒上限**来实现节流，命中 429 要按 `Retry-After` 等待。 | 请以你账户控制台实际值为准。参考 SDK与第三方说明。([GitHub][5])                                            |

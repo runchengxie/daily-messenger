@@ -29,14 +29,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Sync dependencies
+        run: uv sync --locked --no-dev
 
       - name: Guard 07:00–07:10 PT window
         env:
@@ -53,21 +50,21 @@ jobs:
         continue-on-error: true
         env:
           API_KEYS: ${{ secrets.API_KEYS }}
-        run: python etl/run_fetch.py
+        run: uv run python etl/run_fetch.py
 
       - name: Run scoring
         id: scoring
         continue-on-error: true
-        run: python scoring/run_scores.py
+        run: uv run python scoring/run_scores.py
 
       - name: Render digest
         id: digest
         run: |
           if [ "${{ steps.etl.outcome }}" != "success" ] || [ "${{ steps.scoring.outcome }}" != "success" ]; then
             echo "DEGRADED=1" >> $GITHUB_ENV
-            python digest/make_daily.py --degraded
+            uv run python digest/make_daily.py --degraded
           else
-            python digest/make_daily.py
+            uv run python digest/make_daily.py
           fi
 
       - name: Upload Pages artifact
@@ -89,7 +86,7 @@ jobs:
             echo "缺少 FEISHU_WEBHOOK，跳过推送。"
             exit 0
           fi
-          python tools/post_feishu.py --webhook "$FEISHU_WEBHOOK" --summary out/digest_summary.txt --card out/digest_card.json
+          uv run python tools/post_feishu.py --webhook "$FEISHU_WEBHOOK" --summary out/digest_summary.txt --card out/digest_card.json
 
       - name: Mark failure when pipeline degraded
         if: ${{ steps.etl.outcome != 'success' || steps.scoring.outcome != 'success' }}

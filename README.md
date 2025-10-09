@@ -94,10 +94,10 @@ repo/
 ### 使用 uv（推荐）
 
 ```bash
-uv sync --group dev
+uv sync
 ```
 
-`uv sync` 会根据 `pyproject.toml` 与 `uv.lock` 创建隔离环境（默认 `.venv/`），并安装运行时依赖；通过 `--group dev` 额外拉取测试与工具链。使用 `uv run <command>` 在同一环境内执行脚本。
+`uv sync` 会根据 `pyproject.toml` 与 `uv.lock` 创建隔离环境（默认 `.venv/`），并安装运行时依赖；并自动将`dev`作为默认组，额外拉取测试与工具链。如不需`dev`依赖，可以选择`uv sync --no-dev`显式关闭该默认行为。此外，可使用 `uv run <command>` 在同一环境内执行脚本。
 
 ### 使用 venv + pip（备选）
 

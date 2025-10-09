@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote
 from xml.etree import ElementTree as ET
 
@@ -90,6 +90,14 @@ class FetchStatus:
     name: str
     ok: bool
     message: str = ""
+
+
+@dataclass
+class _QuoteSnapshot:
+    day: str
+    close: float
+    change_pct: float
+    source: str
 
 
 def _ensure_out_dir() -> None:
@@ -582,6 +590,14 @@ def _extract_performance(series: Dict[str, Dict[str, str]]) -> float:
     return 1 + change_pct / 100
 
 
+def _stooq_symbol_candidates(symbol: str) -> List[str]:
+    base = symbol.lower()
+    candidates = [base]
+    if "." not in base and not base.startswith("^"):
+        candidates.append(f"{base}.us")
+    return list(dict.fromkeys(candidates))
+
+
 def _fetch_stooq_series(symbol: str) -> List[Dict[str, Any]]:
     params = {"s": symbol.lower(), "i": "d"}
     resp = requests.get("https://stooq.com/q/d/l/", params=params, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT)
@@ -650,6 +666,83 @@ def _extract_yahoo_change(chart: Dict[str, Any]) -> Tuple[str, float, float]:
     change_pct = (latest_close - prev_close) / prev_close * 100
     day = datetime.utcfromtimestamp(latest_ts).date().isoformat()
     return day, latest_close, change_pct
+
+
+def _attempt_quote(fetchers: Iterable[Tuple[str, Callable[[], _QuoteSnapshot]]]) -> _QuoteSnapshot:
+    errors: List[str] = []
+    for label, fetcher in fetchers:
+        try:
+            return fetcher()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{label}: {exc}")
+    detail = "; ".join(errors) if errors else "无可用行情来源"
+    raise RuntimeError(detail)
+
+
+def _fetch_quote_from_stooq(symbol: str) -> _QuoteSnapshot:
+    errors: List[str] = []
+    for candidate in _stooq_symbol_candidates(symbol):
+        try:
+            rows = _fetch_stooq_series(candidate)
+            day, close, change_pct = _extract_latest_change(rows)
+            return _QuoteSnapshot(day=day, close=round(close, 4), change_pct=round(change_pct, 4), source=f"stooq:{candidate}")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{candidate}: {exc}")
+    detail = "; ".join(errors) if errors else "Stooq 未返回数据"
+    raise RuntimeError(detail)
+
+
+def _fetch_quote_from_yahoo(symbol: str) -> _QuoteSnapshot:
+    chart = _fetch_yahoo_chart(symbol)
+    day, close, change_pct = _extract_yahoo_change(chart)
+    return _QuoteSnapshot(day=day, close=round(close, 4), change_pct=round(change_pct, 4), source=f"yahoo:{symbol}")
+
+
+def _fetch_quote_from_fmp(symbol: str, api_key: str) -> _QuoteSnapshot:
+    url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{quote(symbol)}"
+    params = {"timeseries": 2, "apikey": api_key}
+    payload = _request_json(url, params=params)
+    history = payload.get("historical") or []
+    if len(history) < 2:
+        raise RuntimeError("FMP 未返回足够的历史数据")
+    latest, prev = history[0], history[1]
+    day = latest.get("date")
+    close = _safe_float(latest.get("close"))
+    prev_close = _safe_float(prev.get("close"))
+    if not day or close is None or prev_close in (None, 0):
+        raise RuntimeError("FMP 历史数据缺字段")
+    change_pct = (close - prev_close) / prev_close * 100
+    return _QuoteSnapshot(day=day, close=round(close, 4), change_pct=round(change_pct, 4), source="fmp")
+
+
+def _fetch_quote_from_twelve_data(symbol: str, api_key: str) -> _QuoteSnapshot:
+    params = {
+        "symbol": symbol,
+        "interval": "1day",
+        "outputsize": 2,
+        "apikey": api_key,
+    }
+    payload = _request_json("https://api.twelvedata.com/time_series", params=params)
+    if isinstance(payload, dict) and payload.get("status") == "error":
+        raise RuntimeError(payload.get("message") or "Twelve Data 返回错误")
+    values = payload.get("values") if isinstance(payload, dict) else None
+    if not values or len(values) < 2:
+        raise RuntimeError("Twelve Data 未返回足够的时间序列")
+    latest, prev = values[0], values[1]
+    day = latest.get("datetime")
+    close = _safe_float(latest.get("close"))
+    prev_close = _safe_float(prev.get("close"))
+    if not day or close is None or prev_close in (None, 0):
+        raise RuntimeError("Twelve Data 时间序列缺字段")
+    change_pct = (close - prev_close) / prev_close * 100
+    normalized_day = day.split(" ")[0] if isinstance(day, str) else str(day)
+    return _QuoteSnapshot(day=normalized_day, close=round(close, 4), change_pct=round(change_pct, 4), source="twelve_data")
+
+
+def _fetch_quote_from_alpha(symbol: str, api_key: str) -> _QuoteSnapshot:
+    series = _fetch_alpha_series(symbol, api_key)
+    day, close, change_pct = _extract_close_change(series)
+    return _QuoteSnapshot(day=day, close=round(close, 4), change_pct=round(change_pct, 4), source="alpha_vantage")
 
 
 def _fetch_hsi_from_yahoo() -> Tuple[List[Dict[str, Any]], str]:
@@ -919,39 +1012,87 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
     return themes, FetchStatus(name="fmp_theme", ok=True, message=message)
 
 
+def _resolve_index_quote(symbol: str, api_keys: Dict[str, Any]) -> _QuoteSnapshot:
+    fetchers: List[Tuple[str, Callable[[], _QuoteSnapshot]]] = [
+        ("stooq", lambda: _fetch_quote_from_stooq(symbol)),
+        ("yahoo", lambda: _fetch_quote_from_yahoo(symbol)),
+    ]
+    fmp_key = api_keys.get("financial_modeling_prep")
+    if fmp_key:
+        fetchers.append(("fmp", lambda: _fetch_quote_from_fmp(symbol, fmp_key)))
+    twelve_key = api_keys.get("twelve_data")
+    if twelve_key:
+        fetchers.append(("twelve_data", lambda: _fetch_quote_from_twelve_data(symbol, twelve_key)))
+    alpha_key = api_keys.get("alpha_vantage")
+    if alpha_key:
+        fetchers.append(("alpha_vantage", lambda: _fetch_quote_from_alpha(symbol, alpha_key)))
+    return _attempt_quote(fetchers)
+
+
+def _resolve_equity_quote(symbol: str, api_keys: Dict[str, Any]) -> _QuoteSnapshot:
+    fetchers: List[Tuple[str, Callable[[], _QuoteSnapshot]]] = []
+    fmp_key = api_keys.get("financial_modeling_prep")
+    if fmp_key:
+        fetchers.append(("fmp", lambda: _fetch_quote_from_fmp(symbol, fmp_key)))
+    twelve_key = api_keys.get("twelve_data")
+    if twelve_key:
+        fetchers.append(("twelve_data", lambda: _fetch_quote_from_twelve_data(symbol, twelve_key)))
+    fetchers.append(("yahoo", lambda: _fetch_quote_from_yahoo(symbol)))
+    fetchers.append(("stooq", lambda: _fetch_quote_from_stooq(symbol)))
+    alpha_key = api_keys.get("alpha_vantage")
+    if alpha_key:
+        fetchers.append(("alpha_vantage", lambda: _fetch_quote_from_alpha(symbol, alpha_key)))
+    return _attempt_quote(fetchers)
+
+
 def _fetch_market_snapshot_real(api_keys: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], FetchStatus]:
-    api_key = api_keys.get("alpha_vantage")
-    if not api_key:
-        return None, FetchStatus(name="market", ok=False, message="缺少 Alpha Vantage API Key")
-
-    try:
-        index_data = {
-            symbol: _fetch_alpha_series(proxy, api_key) for symbol, proxy in ALPHA_VANTAGE_SYMBOLS.items()
-        }
-        sector_data = {
-            name: _fetch_alpha_series(proxy, api_key) for name, proxy in SECTOR_PROXIES.items()
-        }
-    except Exception as exc:  # noqa: BLE001
-        return None, FetchStatus(name="market", ok=False, message=f"Alpha Vantage 请求失败: {exc}")
-
-    latest_date = None
+    errors: List[str] = []
     indices: List[Dict[str, Any]] = []
-    for symbol, series in index_data.items():
-        day, close, change_pct = _extract_close_change(series)
-        latest_date = latest_date or day
-        indices.append({"symbol": symbol, "close": round(close, 2), "change_pct": round(change_pct, 2)})
+    index_sources: Dict[str, str] = {}
+    latest_date: Optional[str] = None
+
+    for label, proxy in ALPHA_VANTAGE_SYMBOLS.items():
+        try:
+            snapshot = _resolve_index_quote(proxy, api_keys)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{label}: {exc}")
+            continue
+        latest_date = latest_date or snapshot.day
+        indices.append({"symbol": label, "close": round(snapshot.close, 2), "change_pct": round(snapshot.change_pct, 2)})
+        index_sources[label] = snapshot.source
 
     sectors: List[Dict[str, Any]] = []
-    for name, series in sector_data.items():
-        perf = _extract_performance(series)
-        sectors.append({"name": name, "performance": round(perf, 3)})
+    sector_sources: Dict[str, str] = {}
+    for name, proxy in SECTOR_PROXIES.items():
+        try:
+            snapshot = _resolve_equity_quote(proxy, api_keys)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{name}: {exc}")
+            continue
+        sectors.append({"name": name, "performance": round(1 + snapshot.change_pct / 100, 3)})
+        sector_sources[name] = snapshot.source
+
+    if not indices:
+        detail = "; ".join(errors) if errors else "无可用行情来源"
+        return None, FetchStatus(name="market", ok=False, message=f"美股行情获取失败: {detail}")
 
     market = {
-        "date": latest_date,
+        "date": latest_date or _current_trading_day(),
         "indices": indices,
         "sectors": sectors,
     }
-    return market, FetchStatus(name="market", ok=True, message="Alpha Vantage 行情已获取")
+
+    parts: List[str] = []
+    if index_sources:
+        formatted = ", ".join(f"{symbol}:{src}" for symbol, src in index_sources.items())
+        parts.append(f"指数来源 {formatted}")
+    if sector_sources:
+        formatted = ", ".join(f"{name}:{src}" for name, src in sector_sources.items())
+        parts.append(f"板块来源 {formatted}")
+    if errors:
+        parts.append(f"降级 {len(errors)} 项")
+    message = "；".join(parts) if parts else "市场行情已获取"
+    return market, FetchStatus(name="market", ok=True, message=message)
 
 
 def _fetch_events_real(trading_day: str, api_keys: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], FetchStatus]:

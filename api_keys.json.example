@@ -5,4 +5,5 @@
     "financial_modeling_prep": "FMP_KEY",
     "trading_economics": "user:password",
     "finnhub": "FINNHUB_TOKEN"
+    "sosovalue": "YOUR_SOSOVALUE_API_KEY"
 }

@@ -866,7 +866,7 @@ def _extract_yahoo_change(chart: Dict[str, Any]) -> Tuple[str, float, float]:
     if not prev_close:
         raise RuntimeError("Yahoo Finance 前一日收盘价无效")
     change_pct = (latest_close - prev_close) / prev_close * 100
-    day = datetime.utcfromtimestamp(latest_ts).date().isoformat()
+    day = datetime.fromtimestamp(latest_ts, datetime.UTC).date().isoformat()
     return day, latest_close, change_pct
 
 

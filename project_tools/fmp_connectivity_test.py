@@ -1,5 +1,11 @@
 # project_tools/fmp_connectivity_test.py
-import os, sys, json, time, requests
+import os
+import sys
+import json
+import time
+from datetime import UTC, datetime
+
+import requests
 
 
 def load_fmp_key():
@@ -47,40 +53,75 @@ def main():
     base = "https://financialmodelingprep.com"
     symbol = "AAPL"
 
+    quote_source = "stable/quote"
     try:
         data = http_get(
             session, f"{base}/stable/quote", {"symbol": symbol, "apikey": key}
         )
-        src = "stable/quote"
         if not isinstance(data, list) or not data:
             raise RuntimeError("stable/quote 返回空")
-        q = data[0]
+        quote = data[0]
     except Exception as e:
         print(f"[WARN] stable/quote 失败: {e}")
-        data = http_get(session, f"{base}/api/v3/quote-short/{symbol}", {"apikey": key})
-        src = "api/v3/quote-short"
+        data = http_get(
+            session, f"{base}/api/v3/quote-short/{symbol}", {"apikey": key}
+        )
+        quote_source = "api/v3/quote-short"
         if not isinstance(data, list) or not data:
             raise RuntimeError("quote-short 返回空")
-        q = data[0]
+        quote = data[0]
 
-    price = q.get("price") or q.get("priceAvg") or q.get("ask") or q.get("bid")
-    print(
-        json.dumps(
-            {
-                "symbol": symbol,
-                "price": price,
-                "raw": q,
-                "source": src,
-                "key_source": source,
-                "ts": int(time.time()),
-                "proxies_respected": bool(
-                    os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
-                ),
-            },
-            ensure_ascii=False,
-            indent=2,
+    ratios = {}
+    ratios_source = "api/v3/ratios-ttm"
+    try:
+        ratios_data = http_get(
+            session,
+            f"{base}/api/v3/ratios-ttm/{symbol}",
+            {"limit": 1, "apikey": key},
         )
+        if isinstance(ratios_data, list) and ratios_data:
+            ratios = ratios_data[0]
+        else:
+            print("[WARN] ratios-ttm 返回空，跳过估值字段")
+    except Exception as e:
+        print(f"[WARN] ratios-ttm 请求失败: {e}")
+
+    price = (
+        quote.get("price")
+        or quote.get("priceAvg")
+        or quote.get("ask")
+        or quote.get("bid")
     )
+
+    timestamp = quote.get("timestamp")
+    iso_ts = None
+    if isinstance(timestamp, (int, float)):
+        try:
+            iso_ts = datetime.fromtimestamp(timestamp, UTC).isoformat()
+        except Exception as exc:  # noqa: BLE001 - diagnostic only
+            print(f"[WARN] timestamp 解析失败: {exc}")
+
+    out = {
+        "symbol": symbol,
+        "price": price,
+        "marketCap": quote.get("marketCap"),
+        "pe_ttm": ratios.get("peRatioTTM"),
+        "ps_ttm": ratios.get("priceToSalesRatioTTM"),
+        "raw": {
+            "quote": quote,
+            "ratios": ratios,
+        },
+        "sources": {
+            "quote": quote_source,
+            "ratios": ratios_source,
+        },
+        "key_source": source,
+        "ts": int(time.time()),
+        "quote_timestamp_iso": iso_ts,
+        "proxy_on": bool(os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")),
+    }
+
+    print(json.dumps(out, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

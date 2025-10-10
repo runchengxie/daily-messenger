@@ -7,12 +7,14 @@
 | 目标 | 免费数据源 | 说明 |
 | --- | --- | --- |
 | 美股/港股行情、板块代理、基础估值 | [Alpha Vantage](https://www.alphavantage.co/documentation/?utm_source=chatgpt.com)、[Financial Modeling Prep](https://site.financialmodelingprep.com/developer/docs?utm_source=chatgpt.com)、[Twelve Data](https://twelvedata.com/exchanges?utm_source=chatgpt.com)、[marketstack](https://marketstack.com/documentation?utm_source=chatgpt.com)、[Stooq](https://stooq.com/q/d/?s=^hsi&utm_source=chatgpt.com) | Alpha Vantage/FMP 可做美股与 ETF，Twelve Data/marketstack 覆盖港股 EOD，Stooq 提供恒指等指数做情绪或风格代理。 |
-| 估值与财务报表 | [Financial Modeling Prep](https://site.financialmodelingprep.com/developer/docs?utm_source=chatgpt.com)、[SEC EDGAR](https://www.sec.gov/search-filings/edgar-application-programming-interfaces?utm_source=chatgpt.com) | FMP 免费层有常见估值比率，EDGAR 披露可自行计算更细指标。 |
+| 估值与财务报表 | [SEC EDGAR](https://www.sec.gov/search-filings/edgar-application-programming-interfaces?utm_source=chatgpt.com)、[Financial Modeling Prep](https://site.financialmodelingprep.com/developer/docs?utm_source=chatgpt.com) | 项目默认以 EDGAR 公布的公司事实计算 TTM 指标，再配合 Yahoo 行情推导 PE/PS/PB；FMP 仍可作为备援或交叉校验。 |
 | 宏观事件、非农、假期 | [Trading Economics](https://docs.tradingeconomics.com/?utm_source=chatgpt.com)、[FRED](https://fred.stlouisfed.org/docs/api/fred/?utm_source=chatgpt.com)、[Polygon Market Holidays](https://polygon.io/docs/rest/stocks/market-operations/market-holidays?utm_source=chatgpt.com) | Trading Economics 提供日历，FRED 给宏观时间序列，Polygon 或 Finnhub 可补交易日。 |
 | 公司财报日历 | [Finnhub](https://finnhub.io/docs/api/earnings-calendar?utm_source=chatgpt.com) | 免费层每日限额，可直接并入事件流。 |
 | AI 与比特币赛道行情 | [Coinbase](https://docs.cdp.coinbase.com/coinbase-business/track-apis/prices?utm_source=chatgpt.com)、[OKX](https://www.okx.com/docs-v5/en/?utm_source=chatgpt.com)、[Binance](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Get-Funding-Rate-History?utm_source=chatgpt.com)、[Deribit](https://docs.deribit.com/?utm_source=chatgpt.com)、[Farside Investors](https://farside.co.uk/btc/?utm_source=chatgpt.com) | Coinbase 现货、OKX/Binance/Deribit 的资金费率与永续价格覆盖币圈指标，Farside 提供 ETF 净流入。 |
 | 情绪代理 | [Cboe Put/Call Ratio](https://www.cboe.com/us/options/market_statistics/historical_data/?utm_source=chatgpt.com)、[AAII Sentiment Survey](https://www.aaii.com/sentimentsurvey?utm_source=chatgpt.com) | 衍生品偏度与投资者问卷可作为股市情绪补充，币圈已有资金费率与基差。 |
 | AI 大模型资讯 | 官方博客（如 [OpenAI](https://openai.com/news/?utm_source=chatgpt.com)、DeepMind、Anthropic、Meta AI）、[arXiv API](https://info.arxiv.org/help/api/index.html?utm_source=chatgpt.com) | 通过 RSS 或 API 白名单聚合官方动态，接入现有事件模块。 |
+
+> 使用 EDGAR 时请在环境变量中设置 `EDGAR_USER_AGENT`（例如 `MyApp/1.0 ([email protected])`），以便按 SEC 要求标识请求来源并方便联系。
 
 > 这些接口大多有调用频控或返回粒度限制，建议先在本地跑通流程，需求稳定后再考虑升级到更高配额或商用数据源。
 

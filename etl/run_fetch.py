@@ -996,109 +996,322 @@ def _fetch_hk_market_snapshot(api_keys: Dict[str, Any]) -> Tuple[List[Dict[str, 
     return [], FetchStatus(name="hongkong_HSI", ok=False, message=f"港股行情获取失败: {detail}")
 
 
-FMP_STABLE_URL = "https://financialmodelingprep.com/stable/quote"
-FMP_V3_URL = "https://financialmodelingprep.com/api/v3/quote"
-FMP_WARMUP_URL = "https://financialmodelingprep.com/"
-FMP_BATCH_SIZE = 50
-FMP_MAX_RETRIES = 3
-FMP_RETRY_DELAY = 0.8
+EDGAR_TICKER_URL = "https://www.sec.gov/files/company_tickers.json"
+EDGAR_COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+EDGAR_ALLOWED_FORMS = {
+    "10-Q",
+    "10-Q/A",
+    "10-K",
+    "10-K/A",
+    "20-F",
+    "40-F",
+    "6-K",
+    "6-K/A",
+}
+EDGAR_USER_AGENT = os.getenv(
+    "EDGAR_USER_AGENT",
+    "DailyMessenger/0.1 (contact: [email protected])",
+)
+EDGAR_THROTTLE = 0.25
 
 
-class _FMPThrottledError(RuntimeError):
-    """Raised when FMP signals throttling or access denial."""
-
-
-def _normalize_fmp_payload(payload: Any) -> Dict[str, Dict[str, Any]]:
-    if not isinstance(payload, list):
-        raise RuntimeError("FMP 响应格式异常")
-    results: Dict[str, Dict[str, Any]] = {}
-    for item in payload:
-        symbol = item.get("symbol") if isinstance(item, dict) else None
-        if symbol:
-            results[symbol] = item
-    if not results:
-        raise RuntimeError("FMP 返回为空")
-    return results
-
-
-def _chunk_symbols(symbols: List[str], size: int) -> Iterable[List[str]]:
-    unique = sorted({s for s in symbols if s})
-    for idx in range(0, len(unique), size):
-        yield unique[idx : idx + size]
-
-
-def _init_fmp_session() -> requests.Session:
+def _init_edgar_session() -> requests.Session:
     session = requests.Session()
-    session.headers.update({
-        "User-Agent": BROWSER_USER_AGENT,
-        "Accept": "application/json",
-    })
-    try:
-        session.get(FMP_WARMUP_URL, timeout=REQUEST_TIMEOUT)
-    except Exception:  # noqa: BLE001 - warm-up best effort
-        pass
+    session.headers.update(
+        {
+            "User-Agent": EDGAR_USER_AGENT,
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip, deflate",
+        }
+    )
     return session
 
 
-def _request_fmp_chunk(session: requests.Session, symbols: List[str], api_key: str) -> Dict[str, Dict[str, Any]]:
-    params = {"symbol": ",".join(symbols), "apikey": api_key}
-    response = session.get(FMP_STABLE_URL, params=params, timeout=REQUEST_TIMEOUT)
-    if response.status_code == 200:
+def _edgar_request_json(session: requests.Session, url: str) -> Dict[str, Any]:
+    delay = 0.6
+    for attempt in range(1, 4):
+        response = session.get(url, timeout=REQUEST_TIMEOUT)
+        if response.status_code == 429 and attempt < 3:
+            time.sleep(delay)
+            delay *= 2
+            continue
         try:
-            return _normalize_fmp_payload(response.json())
-        except ValueError as exc:  # JSON decode error
-            raise RuntimeError("FMP 响应解析失败") from exc
-    if response.status_code == 429:
-        raise _FMPThrottledError(f"FMP 限流: HTTP {response.status_code}")
-    if response.status_code in {402, 403}:
-        fallback = session.get(FMP_V3_URL, params=params, timeout=REQUEST_TIMEOUT)
-        try:
-            fallback.raise_for_status()
+            response.raise_for_status()
         except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"FMP v3 请求失败: {exc}") from exc
+            raise RuntimeError(f"EDGAR 请求失败: {exc}") from exc
         try:
-            return _normalize_fmp_payload(fallback.json())
+            payload = response.json()
         except ValueError as exc:  # JSON decode error
-            raise RuntimeError("FMP v3 响应解析失败") from exc
-    try:
-        response.raise_for_status()
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"FMP 请求失败: {exc}") from exc
-    raise RuntimeError(f"FMP 未知状态码: {response.status_code}")
+            raise RuntimeError("EDGAR 响应解析失败") from exc
+        time.sleep(EDGAR_THROTTLE)
+        return payload
+    raise RuntimeError("EDGAR 请求多次重试后仍失败")
 
 
-def _fetch_fmp_quotes_stable(symbols: List[str], api_key: str) -> Dict[str, Dict[str, Any]]:
-    session = _init_fmp_session()
-    results: Dict[str, Dict[str, Any]] = {}
-    for batch in _chunk_symbols(symbols, FMP_BATCH_SIZE):
-        delay = FMP_RETRY_DELAY
-        for attempt in range(1, FMP_MAX_RETRIES + 1):
-            try:
-                payload = _request_fmp_chunk(session, batch, api_key)
-            except _FMPThrottledError as exc:
-                raise RuntimeError(str(exc)) from exc
-            except Exception as exc:  # noqa: BLE001
-                if attempt == FMP_MAX_RETRIES:
-                    raise RuntimeError(f"{','.join(batch)}: {exc}") from exc
-                time.sleep(delay)
-                delay *= 2
-                continue
-            results.update(payload)
-            time.sleep(0.3)
-            break
-    missing = sorted(set(symbols) - set(results))
-    if missing:
-        raise RuntimeError(f"FMP 缺少符号: {', '.join(missing)}")
-    if not results:
-        raise RuntimeError("FMP 稳定端点未返回数据")
-    return results
+_EDGAR_TICKER_CACHE: Optional[Dict[str, str]] = None
 
 
-def _fetch_fmp_quotes(symbols: List[str], api_key: str) -> Tuple[Dict[str, Dict[str, Any]], str]:
-    try:
-        return _fetch_fmp_quotes_stable(symbols, api_key), "fmp_stable"
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"fmp_stable: {exc}") from exc
+def _load_edgar_ticker_mapping(session: requests.Session) -> Dict[str, str]:
+    global _EDGAR_TICKER_CACHE
+    if _EDGAR_TICKER_CACHE is not None:
+        return _EDGAR_TICKER_CACHE
+    payload = _edgar_request_json(session, EDGAR_TICKER_URL)
+    mapping: Dict[str, str] = {}
+    if isinstance(payload, dict):
+        values = payload.values()
+    elif isinstance(payload, list):
+        values = payload
+    else:
+        values = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        ticker = str(item.get("ticker") or "").upper()
+        cik_raw = item.get("cik_str")
+        cik = None
+        try:
+            cik = f"{int(cik_raw):010d}"
+        except (TypeError, ValueError):
+            continue
+        if ticker:
+            mapping[ticker] = cik
+    if not mapping:
+        raise RuntimeError("EDGAR 代码映射为空")
+    _EDGAR_TICKER_CACHE = mapping
+    return mapping
+
+
+def _fetch_edgar_companyfacts(session: requests.Session, cik: str) -> Dict[str, Any]:
+    url = EDGAR_COMPANYFACTS_URL.format(cik=cik)
+    payload = _edgar_request_json(session, url)
+    facts = payload.get("facts")
+    if not isinstance(facts, dict):
+        raise RuntimeError("EDGAR 返回缺少 facts 字段")
+    return facts
+
+
+def _edgar_select_fact(
+    facts: Dict[str, Any], candidates: Iterable[Tuple[str, Iterable[str]]]
+) -> Optional[Dict[str, Any]]:
+    for taxonomy, names in candidates:
+        bucket = facts.get(taxonomy)
+        if not isinstance(bucket, dict):
+            continue
+        for name in names:
+            fact = bucket.get(name)
+            if isinstance(fact, dict):
+                return fact
+    return None
+
+
+def _edgar_collect_entries(
+    fact: Optional[Dict[str, Any]], unit_candidates: Iterable[str]
+) -> List[Dict[str, Any]]:
+    if not fact:
+        return []
+    units = fact.get("units")
+    if not isinstance(units, dict):
+        return []
+    entries: List[Dict[str, Any]] = []
+    for unit in unit_candidates:
+        data = units.get(unit)
+        if isinstance(data, list):
+            entries.extend([item for item in data if isinstance(item, dict)])
+    if not entries and units:
+        first_key = next(iter(units))
+        data = units.get(first_key)
+        if isinstance(data, list):
+            entries.extend([item for item in data if isinstance(item, dict)])
+    return entries
+
+
+def _edgar_parse_date(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    return str(value)
+
+
+def _edgar_ttm_from_fact(fact: Optional[Dict[str, Any]]) -> Optional[float]:
+    entries = _edgar_collect_entries(fact, ("USD",))
+    quarterly: List[Tuple[str, float]] = []
+    annual: List[Tuple[str, float]] = []
+    for entry in entries:
+        end = _edgar_parse_date(entry.get("end"))
+        val = _safe_float(entry.get("val"))
+        form = str(entry.get("form") or "").upper()
+        fp = str(entry.get("fp") or "").upper()
+        if end is None or val is None or form not in EDGAR_ALLOWED_FORMS:
+            continue
+        if fp.startswith("Q"):
+            quarterly.append((end, val))
+        else:
+            start = entry.get("start")
+            if isinstance(start, str):
+                try:
+                    start_dt = datetime.fromisoformat(start)
+                    end_dt = datetime.fromisoformat(end)
+                except ValueError:
+                    annual.append((end, val))
+                else:
+                    duration = (end_dt - start_dt).days
+                    if 70 <= duration <= 100:
+                        quarterly.append((end, val))
+                    else:
+                        annual.append((end, val))
+            else:
+                annual.append((end, val))
+    quarterly.sort(key=lambda item: item[0], reverse=True)
+    if len(quarterly) >= 4:
+        return sum(val for _, val in quarterly[:4])
+    if annual:
+        annual.sort(key=lambda item: item[0], reverse=True)
+        return annual[0][1]
+    if quarterly:
+        return sum(val for _, val in quarterly)
+    return None
+
+
+def _edgar_latest_quarter_value(fact: Optional[Dict[str, Any]]) -> Optional[float]:
+    entries = _edgar_collect_entries(fact, ("shares", "pure"))
+    quarterly: List[Tuple[str, float]] = []
+    for entry in entries:
+        end = _edgar_parse_date(entry.get("end"))
+        val = _safe_float(entry.get("val"))
+        form = str(entry.get("form") or "").upper()
+        fp = str(entry.get("fp") or "").upper()
+        if end is None or val is None or form not in EDGAR_ALLOWED_FORMS:
+            continue
+        if fp.startswith("Q"):
+            quarterly.append((end, val))
+    quarterly.sort(key=lambda item: item[0], reverse=True)
+    if quarterly:
+        return quarterly[0][1]
+    fallback = [
+        (entry.get("end"), _safe_float(entry.get("val")))
+        for entry in entries
+        if _safe_float(entry.get("val")) is not None and entry.get("end")
+    ]
+    fallback.sort(key=lambda item: str(item[0]), reverse=True)
+    return fallback[0][1] if fallback else None
+
+
+def _edgar_latest_instant(fact: Optional[Dict[str, Any]]) -> Optional[float]:
+    entries = _edgar_collect_entries(fact, ("USD",))
+    instants: List[Tuple[str, float]] = []
+    for entry in entries:
+        end = _edgar_parse_date(entry.get("end"))
+        val = _safe_float(entry.get("val"))
+        form = str(entry.get("form") or "").upper()
+        if end is None or val is None or form not in EDGAR_ALLOWED_FORMS:
+            continue
+        instants.append((end, val))
+    instants.sort(key=lambda item: item[0], reverse=True)
+    return instants[0][1] if instants else None
+
+
+def _extract_edgar_metrics(facts: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    revenue_fact = _edgar_select_fact(
+        facts,
+        [
+            ("us-gaap", ["Revenues", "SalesRevenueNet", "RevenueFromContractWithCustomerExcludingAssessedTax"]),
+            ("ifrs-full", ["Revenue", "RevenueFromContractsWithCustomers"]),
+        ],
+    )
+    net_income_fact = _edgar_select_fact(
+        facts,
+        [
+            ("us-gaap", ["NetIncomeLoss", "ProfitLoss"]),
+            ("ifrs-full", ["ProfitLoss", "ProfitLossAttributableToOwnersOfParent"]),
+        ],
+    )
+    shares_fact = _edgar_select_fact(
+        facts,
+        [
+            (
+                "us-gaap",
+                [
+                    "WeightedAverageNumberOfDilutedSharesOutstanding",
+                    "DilutedEPSWeightedAverageSharesOutstanding",
+                    "WeightedAverageNumberOfSharesOutstandingDiluted",
+                    "WeightedAverageNumberOfSharesOutstanding",
+                ],
+            ),
+            (
+                "ifrs-full",
+                [
+                    "WeightedAverageDilutedSharesOutstanding",
+                    "WeightedAverageShares",
+                    "WeightedAverageNumberOfOrdinarySharesOutstanding",
+                    "WeightedAverageNumberOfOrdinarySharesOutstandingDiluted",
+                ],
+            ),
+        ],
+    )
+    equity_fact = _edgar_select_fact(
+        facts,
+        [
+            (
+                "us-gaap",
+                [
+                    "StockholdersEquity",
+                    "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+                    "TotalEquity",
+                    "Equity",
+                ],
+            ),
+            (
+                "ifrs-full",
+                [
+                    "Equity",
+                    "EquityIncludingNoncontrollingInterests",
+                    "EquityAttributableToOwnersOfParent",
+                ],
+            ),
+        ],
+    )
+
+    revenue_ttm = _edgar_ttm_from_fact(revenue_fact)
+    net_income_ttm = _edgar_ttm_from_fact(net_income_fact)
+    shares_latest = _edgar_latest_quarter_value(shares_fact)
+    equity_latest = _edgar_latest_instant(equity_fact)
+
+    if not any(
+        value is not None for value in (revenue_ttm, net_income_ttm, shares_latest, equity_latest)
+    ):
+        return {}
+
+    return {
+        "revenue_ttm": revenue_ttm,
+        "net_income_ttm": net_income_ttm,
+        "shares_diluted_latest": shares_latest,
+        "equity_latest": equity_latest,
+    }
+
+
+def _fetch_edgar_fundamentals(
+    symbols: Iterable[str],
+) -> Tuple[Dict[str, Dict[str, Optional[float]]], List[str], List[str]]:
+    session = _init_edgar_session()
+    mapping = _load_edgar_ticker_mapping(session)
+    results: Dict[str, Dict[str, Optional[float]]] = {}
+    missing: List[str] = []
+    errors: List[str] = []
+    for ticker in sorted({s.upper() for s in symbols if s}):
+        cik = mapping.get(ticker)
+        if not cik:
+            missing.append(ticker)
+            continue
+        try:
+            facts = _fetch_edgar_companyfacts(session, cik)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{ticker}: {exc}")
+            continue
+        metrics = _extract_edgar_metrics(facts)
+        if metrics:
+            results[ticker] = metrics
+        else:
+            errors.append(f"{ticker}: 财报数据不足")
+    return results, missing, errors
 
 
 def _fetch_yahoo_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
@@ -1140,6 +1353,7 @@ def _fetch_yahoo_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
                 "pe": item.get("trailingPE"),
                 "priceToSalesRatioTTM": item.get("priceToSalesTrailing12Months"),
                 "marketCap": item.get("marketCap"),
+                "price": item.get("regularMarketPrice"),
             }
         if results:
             return results
@@ -1164,6 +1378,7 @@ def _fetch_price_only_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
             "pe": None,
             "priceToSalesRatioTTM": None,
             "marketCap": None,
+            "price": snapshot.close,
         }
         time.sleep(0.2)
     if not results:
@@ -1187,63 +1402,132 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
     source = ""
     errors: List[str] = []
 
-    api_key = api_keys.get("financial_modeling_prep")
-    if api_key:
+    try:
+        quotes = _fetch_yahoo_quotes(all_symbols)
+        source = "yahoo"
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"Yahoo: {exc}")
         try:
-            quotes, source = _fetch_fmp_quotes(all_symbols, api_key)
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"FMP: {exc}")
+            quotes = _fetch_price_only_quotes(all_symbols)
+            source = "price_only"
+        except Exception as fallback_exc:  # noqa: BLE001
+            errors.append(f"price_only: {fallback_exc}")
+            detail = "; ".join(errors) if errors else "未知原因"
+            return {}, FetchStatus(name="fmp_theme", ok=False, message=f"主题估值获取失败: {detail}")
 
-    if not quotes:
-        try:
-            quotes = _fetch_yahoo_quotes(all_symbols)
-            source = "yahoo"
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"Yahoo: {exc}")
-            try:
-                quotes = _fetch_price_only_quotes(all_symbols)
-                source = "price_only"
-            except Exception as fallback_exc:  # noqa: BLE001
-                errors.append(f"price_only: {fallback_exc}")
-                detail = "; ".join(errors) if errors else "未知原因"
-                return {}, FetchStatus(name="fmp_theme", ok=False, message=f"主题估值获取失败: {detail}")
+    fundamentals: Dict[str, Dict[str, Optional[float]]] = {}
+    missing_cik: List[str] = []
+    edgar_errors: List[str] = []
+    try:
+        fundamentals, missing_cik, edgar_errors = _fetch_edgar_fundamentals(all_symbols)
+    except Exception as exc:  # noqa: BLE001
+        edgar_errors.append(str(exc))
+
+    quotes_norm = {symbol.upper(): payload for symbol, payload in quotes.items()}
 
     themes: Dict[str, Any] = {}
     for theme, symbols in FMP_THEME_SYMBOLS.items():
-        entries = [quotes[s] for s in symbols if s in quotes]
-        if not entries:
+        change_values: List[Optional[float]] = []
+        pe_values: List[Optional[float]] = []
+        ps_values: List[Optional[float]] = []
+        pb_values: List[Optional[float]] = []
+        market_cap_total = 0.0
+
+        for symbol in symbols:
+            quote = quotes_norm.get(symbol.upper())
+            if not quote:
+                continue
+            change_values.append(_safe_float(quote.get("changesPercentage")))
+            price = _safe_float(quote.get("price"))
+            market_cap = _safe_float(quote.get("marketCap"))
+            if market_cap is not None:
+                market_cap_total += market_cap
+
+            metrics = fundamentals.get(symbol.upper()) if fundamentals else None
+            computed_pe: Optional[float] = None
+            computed_ps: Optional[float] = None
+            computed_pb: Optional[float] = None
+            if metrics:
+                net_income = metrics.get("net_income_ttm")
+                shares = metrics.get("shares_diluted_latest")
+                revenue = metrics.get("revenue_ttm")
+                equity = metrics.get("equity_latest")
+                if (
+                    price is not None
+                    and net_income is not None
+                    and shares not in (None, 0.0)
+                ):
+                    eps = net_income / shares if shares else None
+                    if eps not in (None, 0.0):
+                        computed_pe = price / eps
+                if market_cap not in (None, 0.0) and revenue not in (None, 0.0):
+                    computed_ps = float(market_cap) / float(revenue)
+                if market_cap not in (None, 0.0) and equity not in (None, 0.0):
+                    computed_pb = float(market_cap) / float(equity)
+
+            if computed_pe is not None:
+                pe_values.append(computed_pe)
+            else:
+                pe_values.append(_safe_float(quote.get("pe")))
+
+            if computed_ps is not None:
+                ps_values.append(computed_ps)
+            else:
+                ratio = quote.get("priceToSalesRatioTTM")
+                if ratio is None:
+                    ratio = quote.get("priceToSalesRatio")
+                ps_values.append(_safe_float(ratio))
+
+            if computed_pb is not None:
+                pb_values.append(computed_pb)
+
+        if not change_values and not pe_values and not ps_values and not pb_values:
             continue
-        change_avg = _mean([_safe_float(e.get("changesPercentage")) for e in entries])
-        pe_avg = _mean([_safe_float(e.get("pe")) for e in entries])
-        ps_avg = _mean(
-            [
-                _safe_float(e.get("priceToSalesRatioTTM"))
-                if e.get("priceToSalesRatioTTM") is not None
-                else _safe_float(e.get("priceToSalesRatio"))
-                for e in entries
-            ]
-        )
-        market_cap_total = sum(_safe_float(e.get("marketCap")) or 0.0 for e in entries)
+
+        change_avg = _mean(change_values)
+        pe_avg = _mean(pe_values)
+        ps_avg = _mean(ps_values)
+        pb_avg = _mean(pb_values)
+
         themes[theme] = {
             "change_pct": round(change_avg, 2) if change_avg is not None else None,
             "avg_pe": round(pe_avg, 2) if pe_avg is not None else None,
             "avg_ps": round(ps_avg, 2) if ps_avg is not None else None,
+            "avg_pb": round(pb_avg, 2) if pb_avg is not None else None,
             "market_cap": round(market_cap_total, 2) if market_cap_total else None,
         }
 
     if not themes:
         return {}, FetchStatus(name="fmp_theme", ok=False, message="主题估值数据为空")
 
-    if source == "yahoo":
-        message = "主题估值使用 Yahoo Finance 兜底"
-    elif source == "price_only":
+    if source == "price_only":
         message = "主题估值使用价格兜底，PE/PS/市值为空"
-    elif source:
-        message = "FMP 主题估值已获取"
+        status_ok = True
     else:
-        message = "主题估值已获取"
+        status_ok = True
+        issue_items: List[str] = []
+        if missing_cik:
+            issue_items.append(f"缺少CIK: {', '.join(sorted(missing_cik))}")
+        issue_items.extend(edgar_errors)
+        detail = ""
+        if issue_items:
+            if len(issue_items) > 2:
+                detail = "; ".join(issue_items[:2]) + f" 等 {len(issue_items)} 项"
+            else:
+                detail = "; ".join(issue_items)
+        if fundamentals:
+            if detail:
+                message = f"主题估值使用 Yahoo 行情 + EDGAR 财报（{detail}）"
+            else:
+                message = "主题估值使用 Yahoo 行情 + EDGAR 财报"
+        else:
+            status_ok = False
+            if detail:
+                message = f"主题估值缺少 EDGAR 财报，仅使用行情（{detail}）"
+            else:
+                message = "主题估值缺少 EDGAR 财报，仅使用行情"
 
-    return themes, FetchStatus(name="fmp_theme", ok=True, message=message)
+    return themes, FetchStatus(name="fmp_theme", ok=status_ok, message=message)
 
 
 def _resolve_index_quote(symbol: str, api_keys: Dict[str, Any]) -> _QuoteSnapshot:
@@ -1600,12 +1884,13 @@ def run(argv: Optional[List[str]] = None) -> int:
         if ai_perf is not None:
             theme_metrics.setdefault("ai", {})["performance"] = ai_perf
 
-    if api_keys:
-        themes, theme_status = _fetch_theme_metrics_from_fmp(api_keys)
-        statuses.append(theme_status)
-        if theme_status.ok:
-            for name, metrics in themes.items():
-                theme_metrics.setdefault(name, {}).update(metrics)
+    themes, theme_status = _fetch_theme_metrics_from_fmp(api_keys)
+    statuses.append(theme_status)
+    if theme_status.ok:
+        for name, metrics in themes.items():
+            theme_metrics.setdefault(name, {}).update(metrics)
+    else:
+        overall_ok = False
 
     if market_data is not None and theme_metrics:
         market_data.setdefault("themes", {}).update(theme_metrics)

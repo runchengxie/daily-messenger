@@ -118,6 +118,8 @@ CANONICAL_API_KEYS = (
     "finnhub",
     "sosovalue",
     "coinglass",
+    "alpaca_key_id",
+    "alpaca_secret",
 )
 
 
@@ -844,7 +846,12 @@ def _fetch_yahoo_chart(symbol: str) -> Dict[str, Any]:
     encoded = quote(symbol, safe="")
     url = f"https://query2.finance.yahoo.com/v8/finance/chart/{encoded}"
     params = {"interval": "1d", "range": "5d"}
-    payload = _request_json(url, params=params)
+    headers = {
+        "User-Agent": BROWSER_USER_AGENT,
+        "Accept": "application/json",
+        "Referer": "https://finance.yahoo.com/",
+    }
+    payload = _request_json(url, params=params, headers=headers)
     chart = (payload.get("chart") or {}).get("result") or []
     if not chart:
         raise RuntimeError("Yahoo Finance 未返回行情")
@@ -907,7 +914,8 @@ def _fetch_quote_from_fmp(symbol: str, api_key: str) -> _QuoteSnapshot:
     history = payload.get("historical") or []
     if len(history) < 2:
         raise RuntimeError("FMP 未返回足够的历史数据")
-    latest, prev = history[0], history[1]
+    ordered = sorted(history, key=lambda item: item.get("date"), reverse=True)
+    latest, prev = ordered[0], ordered[1]
     day = latest.get("date")
     close = _safe_float(latest.get("close"))
     prev_close = _safe_float(prev.get("close"))
@@ -930,7 +938,8 @@ def _fetch_quote_from_twelve_data(symbol: str, api_key: str) -> _QuoteSnapshot:
     values = payload.get("values") if isinstance(payload, dict) else None
     if not values or len(values) < 2:
         raise RuntimeError("Twelve Data 未返回足够的时间序列")
-    latest, prev = values[0], values[1]
+    ordered = sorted(values, key=lambda item: item.get("datetime"), reverse=True)
+    latest, prev = ordered[0], ordered[1]
     day = latest.get("datetime")
     close = _safe_float(latest.get("close"))
     prev_close = _safe_float(prev.get("close"))
@@ -939,6 +948,42 @@ def _fetch_quote_from_twelve_data(symbol: str, api_key: str) -> _QuoteSnapshot:
     change_pct = (close - prev_close) / prev_close * 100
     normalized_day = day.split(" ")[0] if isinstance(day, str) else str(day)
     return _QuoteSnapshot(day=normalized_day, close=round(close, 4), change_pct=round(change_pct, 4), source="twelve_data")
+
+
+def _fetch_quote_from_alpaca(symbol: str, key_id: str, secret: str) -> _QuoteSnapshot:
+    params = {
+        "symbols": symbol,
+        "timeframe": "1Day",
+        "limit": 2,
+        "adjustment": "raw",
+    }
+    headers = {
+        "APCA-API-KEY-ID": key_id,
+        "APCA-API-SECRET-KEY": secret,
+        "Accept": "application/json",
+    }
+    payload = _request_json("https://data.alpaca.markets/v2/stocks/bars", params=params, headers=headers)
+    bars_map = payload.get("bars") if isinstance(payload, dict) else None
+    if not isinstance(bars_map, dict):
+        raise RuntimeError("Alpaca 响应缺少 bars 字段")
+    candidates = [symbol, symbol.upper(), symbol.lower()]
+    bars: List[Dict[str, Any]] = []
+    for key in candidates:
+        bars = bars_map.get(key) or []
+        if bars:
+            break
+    if len(bars) < 2:
+        raise RuntimeError("Alpaca 未返回足够的时间序列")
+    ordered = sorted(bars, key=lambda item: str(item.get("t")))
+    prev, latest = ordered[-2], ordered[-1]
+    close = _safe_float(latest.get("c"))
+    prev_close = _safe_float(prev.get("c"))
+    if close is None or prev_close in (None, 0):
+        raise RuntimeError("Alpaca 时间序列缺少收盘价")
+    raw_ts = str(latest.get("t"))
+    day = raw_ts.split("T")[0] if "T" in raw_ts else raw_ts[:10]
+    change_pct = (close - prev_close) / prev_close * 100
+    return _QuoteSnapshot(day=day, close=round(close, 4), change_pct=round(change_pct, 4), source="alpaca")
 
 
 def _fetch_quote_from_alpha(symbol: str, api_key: str) -> _QuoteSnapshot:
@@ -1360,13 +1405,26 @@ def _fetch_yahoo_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
     raise RuntimeError(f"Yahoo Finance 未返回报价: {last_error or 'empty'}")
 
 
-def _fetch_price_only_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+def _fetch_price_only_quotes(symbols: List[str], api_keys: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
     results: Dict[str, Dict[str, Any]] = {}
+    alpaca_key: Optional[str] = None
+    alpaca_secret: Optional[str] = None
+    if api_keys:
+        alpaca_key = _coerce_api_key(api_keys.get("alpaca_key_id"))
+        alpaca_secret = _coerce_api_key(api_keys.get("alpaca_secret"))
+    yahoo_disabled = os.getenv("DISABLE_YAHOO", "0") == "1"
     for symbol in symbols:
         snapshot: Optional[_QuoteSnapshot] = None
         try:
             snapshot = _fetch_quote_from_stooq(symbol)
         except Exception:  # noqa: BLE001
+            snapshot = None
+        if not snapshot and alpaca_key and alpaca_secret:
+            try:
+                snapshot = _fetch_quote_from_alpaca(symbol, alpaca_key, alpaca_secret)
+            except Exception:  # noqa: BLE001
+                snapshot = None
+        if not snapshot and not yahoo_disabled:
             try:
                 snapshot = _fetch_quote_from_yahoo(symbol)
             except Exception:  # noqa: BLE001
@@ -1379,6 +1437,7 @@ def _fetch_price_only_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
             "priceToSalesRatioTTM": None,
             "marketCap": None,
             "price": snapshot.close,
+            "source": snapshot.source,
         }
         time.sleep(0.2)
     if not results:
@@ -1405,7 +1464,7 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
 
     if prefer_stooq:
         try:
-            quotes = _fetch_price_only_quotes(all_symbols)
+            quotes = _fetch_price_only_quotes(all_symbols, api_keys)
             source = "price_only"
         except Exception as exc:  # noqa: BLE001
             errors.append(f"price_only: {exc}")
@@ -1423,7 +1482,7 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
         except Exception as exc:  # noqa: BLE001
             errors.append(f"Yahoo: {exc}")
             try:
-                quotes = _fetch_price_only_quotes(all_symbols)
+                quotes = _fetch_price_only_quotes(all_symbols, api_keys)
                 source = "price_only"
             except Exception as fallback_exc:  # noqa: BLE001
                 errors.append(f"price_only: {fallback_exc}")
@@ -1523,10 +1582,17 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
 
     if source == "price_only":
         status_ok = True
+        fallback_providers = sorted(
+            {
+                str(payload.get("source") or "price_only").split(":", 1)[0]
+                for payload in quotes.values()
+            }
+        )
+        fallback_label = " + ".join(fallback_providers) if fallback_providers else "价格兜底"
         if fundamentals:
-            message = "主题估值使用 Stooq 价格兜底 + EDGAR 财报"
+            message = f"主题估值使用 {fallback_label} 报价兜底 + EDGAR 财报"
         else:
-            message = "主题估值使用 Stooq 价格兜底，仅含行情字段"
+            message = f"主题估值使用 {fallback_label} 报价兜底，仅含行情字段"
         if errors:
             detail = "; ".join(errors)
             message = f"{message}（{detail}）"
@@ -1558,35 +1624,70 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
 
 
 def _resolve_index_quote(symbol: str, api_keys: Dict[str, Any]) -> _QuoteSnapshot:
-    fetchers: List[Tuple[str, Callable[[], _QuoteSnapshot]]] = [
-        ("stooq", lambda: _fetch_quote_from_stooq(symbol)),
-        ("yahoo", lambda: _fetch_quote_from_yahoo(symbol)),
-    ]
-    fmp_key = api_keys.get("financial_modeling_prep")
-    if fmp_key:
-        fetchers.append(("fmp", lambda: _fetch_quote_from_fmp(symbol, fmp_key)))
-    twelve_key = api_keys.get("twelve_data")
-    if twelve_key:
-        fetchers.append(("twelve_data", lambda: _fetch_quote_from_twelve_data(symbol, twelve_key)))
-    alpha_key = api_keys.get("alpha_vantage")
-    if alpha_key:
-        fetchers.append(("alpha_vantage", lambda: _fetch_quote_from_alpha(symbol, alpha_key)))
+    order_env = os.getenv("QUOTE_ORDER", "")
+    default_order = ["stooq", "financial_modeling_prep", "twelve_data", "alpha_vantage"]
+    wished = [item.strip().lower() for item in order_env.split(",") if item.strip()] or default_order
+    fmp_key = _coerce_api_key(api_keys.get("financial_modeling_prep"))
+    twelve_key = _coerce_api_key(api_keys.get("twelve_data"))
+    alpha_key = _coerce_api_key(api_keys.get("alpha_vantage"))
+    yahoo_disabled = os.getenv("DISABLE_YAHOO", "0") == "1"
+
+    fetchers: List[Tuple[str, Callable[[], _QuoteSnapshot]]] = []
+    added: set[str] = set()
+    for name in wished:
+        if name == "stooq" and "stooq" not in added:
+            fetchers.append(("stooq", lambda: _fetch_quote_from_stooq(symbol)))
+            added.add("stooq")
+        elif name == "financial_modeling_prep" and fmp_key and "fmp" not in added:
+            fetchers.append(("fmp", lambda key=fmp_key: _fetch_quote_from_fmp(symbol, key)))
+            added.add("fmp")
+        elif name == "twelve_data" and twelve_key and "twelve_data" not in added:
+            fetchers.append(("twelve_data", lambda key=twelve_key: _fetch_quote_from_twelve_data(symbol, key)))
+            added.add("twelve_data")
+        elif name == "alpha_vantage" and alpha_key and "alpha_vantage" not in added:
+            fetchers.append(("alpha_vantage", lambda key=alpha_key: _fetch_quote_from_alpha(symbol, key)))
+            added.add("alpha_vantage")
+
+    if not yahoo_disabled:
+        fetchers.append(("yahoo", lambda: _fetch_quote_from_yahoo(symbol)))
     return _attempt_quote(fetchers)
 
 
 def _resolve_equity_quote(symbol: str, api_keys: Dict[str, Any]) -> _QuoteSnapshot:
+    order_env = os.getenv("QUOTE_ORDER", "")
+    default_order = ["financial_modeling_prep", "twelve_data", "stooq", "alpaca", "alpha_vantage"]
+    wished = [item.strip().lower() for item in order_env.split(",") if item.strip()] or default_order
+
+    fmp_key = _coerce_api_key(api_keys.get("financial_modeling_prep"))
+    twelve_key = _coerce_api_key(api_keys.get("twelve_data"))
+    alpha_key = _coerce_api_key(api_keys.get("alpha_vantage"))
+    alpaca_key = _coerce_api_key(api_keys.get("alpaca_key_id"))
+    alpaca_secret = _coerce_api_key(api_keys.get("alpaca_secret"))
+    yahoo_disabled = os.getenv("DISABLE_YAHOO", "0") == "1"
+
     fetchers: List[Tuple[str, Callable[[], _QuoteSnapshot]]] = []
-    fmp_key = api_keys.get("financial_modeling_prep")
-    if fmp_key:
-        fetchers.append(("fmp", lambda: _fetch_quote_from_fmp(symbol, fmp_key)))
-    twelve_key = api_keys.get("twelve_data")
-    if twelve_key:
-        fetchers.append(("twelve_data", lambda: _fetch_quote_from_twelve_data(symbol, twelve_key)))
-    fetchers.append(("yahoo", lambda: _fetch_quote_from_yahoo(symbol)))
-    fetchers.append(("stooq", lambda: _fetch_quote_from_stooq(symbol)))
-    alpha_key = api_keys.get("alpha_vantage")
-    if alpha_key:
-        fetchers.append(("alpha_vantage", lambda: _fetch_quote_from_alpha(symbol, alpha_key)))
+    added: set[str] = set()
+    for name in wished:
+        if name == "financial_modeling_prep" and fmp_key and "fmp" not in added:
+            fetchers.append(("fmp", lambda key=fmp_key: _fetch_quote_from_fmp(symbol, key)))
+            added.add("fmp")
+        elif name == "twelve_data" and twelve_key and "twelve_data" not in added:
+            fetchers.append(("twelve_data", lambda key=twelve_key: _fetch_quote_from_twelve_data(symbol, key)))
+            added.add("twelve_data")
+        elif name == "stooq" and "stooq" not in added:
+            fetchers.append(("stooq", lambda: _fetch_quote_from_stooq(symbol)))
+            added.add("stooq")
+        elif name == "alpaca" and alpaca_key and alpaca_secret and "alpaca" not in added:
+            fetchers.append(
+                ("alpaca", lambda key=alpaca_key, secret=alpaca_secret: _fetch_quote_from_alpaca(symbol, key, secret))
+            )
+            added.add("alpaca")
+        elif name == "alpha_vantage" and alpha_key and "alpha_vantage" not in added:
+            fetchers.append(("alpha_vantage", lambda key=alpha_key: _fetch_quote_from_alpha(symbol, key)))
+            added.add("alpha_vantage")
+
+    if not yahoo_disabled:
+        fetchers.append(("yahoo", lambda: _fetch_quote_from_yahoo(symbol)))
     return _attempt_quote(fetchers)
 
 

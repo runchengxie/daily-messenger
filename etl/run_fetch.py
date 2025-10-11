@@ -1349,6 +1349,110 @@ def _extract_edgar_metrics(facts: Dict[str, Any]) -> Dict[str, Optional[float]]:
     }
 
 
+def _extract_fmp_metrics(payload: Any) -> Dict[str, Optional[float]]:
+    entries: List[Dict[str, Any]] = []
+    if isinstance(payload, dict):
+        for key in ("metrics", "ttmMetrics", "data", "metric", "items"):
+            block = payload.get(key)
+            if isinstance(block, list):
+                entries.extend(item for item in block if isinstance(item, dict))
+            elif isinstance(block, dict):
+                entries.append(block)
+        if not entries and any(field in payload for field in ("revenueTTM", "netIncomeTTM")):
+            entries.append(payload)
+    elif isinstance(payload, list):
+        entries = [item for item in payload if isinstance(item, dict)]
+    if not entries:
+        return {}
+    def _entry_date(entry: Dict[str, Any]) -> str:
+        for key in ("date", "period", "fiscalDateEnding"):
+            value = entry.get(key)
+            if value:
+                return str(value)
+        return ""
+    entries.sort(key=_entry_date, reverse=True)
+    record = entries[0]
+    lower_map = {str(k).lower(): v for k, v in record.items()}
+
+    def pick(keys: Iterable[str]) -> Optional[float]:
+        for key in keys:
+            if key in record:
+                value = record.get(key)
+            else:
+                value = record.get(key.lower())
+            if value is None:
+                value = lower_map.get(key.lower())
+            if value is not None:
+                number = _safe_float(value)
+                if number is not None:
+                    return number
+        return None
+
+    revenue = pick(
+        [
+            "revenueTTM",
+            "RevenueTTM",
+            "revenue_ttm",
+        ]
+    )
+    net_income = pick(
+        [
+            "netIncomeTTM",
+            "NetIncomeTTM",
+            "net_income_ttm",
+        ]
+    )
+    shares = pick(
+        [
+            "weightedAverageSharesDilutedTTM",
+            "weightedAverageShsOutDilTTM",
+            "weightedAverageShsOutDil",
+            "WeightedAverageSharesDilutedTTM",
+            "WeightedAverageShsOutDilTTM",
+        ]
+    )
+    equity = pick(
+        [
+            "shareholdersEquityTTM",
+            "ShareholdersEquityTTM",
+            "totalShareholdersEquityTTM",
+            "TotalShareholdersEquityTTM",
+            "shareholdersequityttm",
+        ]
+    )
+    if not any(val is not None for val in (revenue, net_income, shares, equity)):
+        return {}
+    return {
+        "revenue_ttm": revenue,
+        "net_income_ttm": net_income,
+        "shares_diluted_latest": shares,
+        "equity_latest": equity,
+    }
+
+
+def _fetch_fmp_fundamentals(
+    symbols: Iterable[str],
+    api_key: str,
+) -> Tuple[Dict[str, Dict[str, Optional[float]]], List[str]]:
+    results: Dict[str, Dict[str, Optional[float]]] = {}
+    errors: List[str] = []
+    for ticker in sorted({s.upper() for s in symbols if s}):
+        url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{quote(ticker)}"
+        params = {"apikey": api_key}
+        try:
+            payload = _request_json(url, params=params)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{ticker}: {exc}")
+            continue
+        metrics = _extract_fmp_metrics(payload)
+        if metrics:
+            results[ticker] = metrics
+        else:
+            errors.append(f"{ticker}: FMP 数据不足")
+        time.sleep(0.2)
+    return results, errors
+
+
 def _fetch_edgar_fundamentals(
     symbols: Iterable[str],
 ) -> Tuple[Dict[str, Dict[str, Optional[float]]], List[str], List[str]]:
@@ -1515,10 +1619,39 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
     fundamentals: Dict[str, Dict[str, Optional[float]]] = {}
     missing_cik: List[str] = []
     edgar_errors: List[str] = []
+    fmp_fallback_used = False
+    fmp_fallback_errors: List[str] = []
     try:
         fundamentals, missing_cik, edgar_errors = _fetch_edgar_fundamentals(all_symbols)
     except Exception as exc:  # noqa: BLE001
         edgar_errors.append(str(exc))
+    edgar_available = bool(fundamentals)
+
+    fmp_key = _coerce_api_key(api_keys.get("financial_modeling_prep"))
+    if fmp_key:
+        needs_fmp: List[str] = []
+        required_fields = ("net_income_ttm", "revenue_ttm", "shares_diluted_latest", "equity_latest")
+        for symbol in {sym.upper() for sym in all_symbols}:
+            metrics = fundamentals.get(symbol)
+            if not metrics:
+                needs_fmp.append(symbol)
+                continue
+            if any(metrics.get(field) in (None, 0.0) for field in required_fields):
+                needs_fmp.append(symbol)
+        if needs_fmp:
+            fmp_data, fallback_errors = _fetch_fmp_fundamentals(needs_fmp, fmp_key)
+            if fmp_data:
+                fmp_fallback_used = True
+                for symbol, metrics in fmp_data.items():
+                    merged = fundamentals.setdefault(symbol, {})
+                    for key, value in metrics.items():
+                        if value is None:
+                            continue
+                        existing = merged.get(key)
+                        if existing in (None, 0.0):
+                            merged[key] = value
+            if fallback_errors:
+                fmp_fallback_errors.extend(fallback_errors)
 
     quotes_norm = {symbol.upper(): payload for symbol, payload in quotes.items()}
 
@@ -1603,6 +1736,19 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
     if not themes:
         return {}, FetchStatus(name="fmp_theme", ok=False, message="主题估值数据为空")
 
+    fundamentals_present = bool(fundamentals)
+    if fundamentals_present:
+        if edgar_available and fmp_fallback_used:
+            fundamentals_label = "EDGAR + FMP 财报"
+        elif edgar_available:
+            fundamentals_label = "EDGAR 财报"
+        elif fmp_fallback_used:
+            fundamentals_label = "FMP 财报"
+        else:
+            fundamentals_label = "财报数据"
+    else:
+        fundamentals_label = ""
+
     if source == "price_only":
         status_ok = True
         fallback_providers = sorted(
@@ -1612,12 +1758,27 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
             }
         )
         fallback_label = " + ".join(fallback_providers) if fallback_providers else "价格兜底"
-        if fundamentals:
-            message = f"主题估值使用 {fallback_label} 报价兜底 + EDGAR 财报"
+        issue_items: List[str] = []
+        if missing_cik:
+            issue_items.append(f"缺少CIK: {', '.join(sorted(missing_cik))}")
+        issue_items.extend(edgar_errors)
+        issue_items.extend(fmp_fallback_errors)
+        if fundamentals_present and fundamentals_label:
+            message = f"主题估值使用 {fallback_label} 报价兜底 + {fundamentals_label}"
+        elif fundamentals_present:
+            message = f"主题估值使用 {fallback_label} 报价兜底 + 财报数据"
         else:
             message = f"主题估值使用 {fallback_label} 报价兜底，仅含行情字段"
+        detail_parts: List[str] = []
         if errors:
-            detail = "; ".join(errors)
+            detail_parts.append("; ".join(errors))
+        if issue_items:
+            if len(issue_items) > 2:
+                detail_parts.append("; ".join(issue_items[:2]) + f" 等 {len(issue_items)} 项")
+            else:
+                detail_parts.append("; ".join(issue_items))
+        if detail_parts:
+            detail = "；".join(part for part in detail_parts if part)
             message = f"{message}（{detail}）"
     else:
         status_ok = True
@@ -1625,17 +1786,23 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
         if missing_cik:
             issue_items.append(f"缺少CIK: {', '.join(sorted(missing_cik))}")
         issue_items.extend(edgar_errors)
+        issue_items.extend(fmp_fallback_errors)
         detail = ""
         if issue_items:
             if len(issue_items) > 2:
                 detail = "; ".join(issue_items[:2]) + f" 等 {len(issue_items)} 项"
             else:
                 detail = "; ".join(issue_items)
-        if fundamentals:
+        if fundamentals_present and fundamentals_label:
             if detail:
-                message = f"主题估值使用 Yahoo 行情 + EDGAR 财报（{detail}）"
+                message = f"主题估值使用 Yahoo 行情 + {fundamentals_label}（{detail}）"
             else:
-                message = "主题估值使用 Yahoo 行情 + EDGAR 财报"
+                message = f"主题估值使用 Yahoo 行情 + {fundamentals_label}"
+        elif fundamentals_present:
+            if detail:
+                message = f"主题估值使用 Yahoo 行情 + 财报数据（{detail}）"
+            else:
+                message = "主题估值使用 Yahoo 行情 + 财报数据"
         else:
             status_ok = False
             if detail:

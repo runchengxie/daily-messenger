@@ -8,9 +8,22 @@
     body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; margin: 2rem; color: #1f2933; }
     h1 { color: #2563eb; }
     table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
-    th, td { border: 1px solid #d1d5db; padding: 0.5rem; text-align: left; }
+    th, td { border: 1px solid #d1d5db; padding: 0.5rem; text-align: left; vertical-align: top; }
     th { background: #eff6ff; }
     .degraded { color: #d97706; font-weight: 600; }
+    .score-main { font-weight: 600; }
+    .score-sub { font-size: 0.85rem; color: #4b5563; margin-top: 0.2rem; }
+    .badge { display: inline-block; margin-left: 0.3rem; padding: 0.12rem 0.45rem; border-radius: 999px; font-size: 0.7rem; font-weight: 600; }
+    .badge-fallback { background: #fef3c7; color: #b45309; }
+    .delta-up { color: #047857; }
+    .delta-down { color: #b91c1c; }
+    .source-note { font-size: 0.75rem; color: #6b7280; margin-top: 0.2rem; }
+    .weights-list { list-style: none; padding-left: 0; margin-top: -0.5rem; }
+    .weights-list li { margin: 0.4rem 0; }
+    .status-table th { background: #f1f5f9; }
+    .status-ok { color: #047857; font-weight: 600; }
+    .status-fail { color: #b91c1c; font-weight: 600; }
+    .event-empty { color: #6b7280; }
   </style>
 </head>
 <body>
@@ -35,18 +48,77 @@
       </thead>
       <tbody>
       {% for theme in themes %}
+        {% set detail = theme.breakdown_detail or {} %}
+        {% set meta = theme.meta or {} %}
         <tr>
           <td>{{ theme.label }}</td>
-          <td>{{ '%.1f' | format(theme.total) }}</td>
-          <td>{{ theme.breakdown.fundamental | round(1) }}</td>
-          <td>{{ theme.breakdown.valuation | round(1) }}</td>
-          <td>{{ theme.breakdown.sentiment | round(1) }}</td>
-          <td>{{ theme.breakdown.liquidity | round(1) }}</td>
-          <td>{{ theme.breakdown.event | round(1) }}</td>
+          <td>
+            <div class="score-main">{{ '%.1f' | format(theme.total) }}</div>
+            {% set delta = meta.get('delta') %}
+            {% if delta is not none %}
+            <div class="score-sub">
+              Δ <span class="{{ 'delta-up' if delta >= 0 else 'delta-down' }}">{{ '%+.1f' | format(delta) }}</span>
+            </div>
+            {% endif %}
+            {% set dist_add = meta.get('distance_to_add') %}
+            {% set dist_trim = meta.get('distance_to_trim') %}
+            {% if dist_add is not none or dist_trim is not none %}
+            <div class="score-sub">
+              {% if dist_add is not none %}
+                ↗ 增持 {{ '%+.1f' | format(dist_add) }}
+              {% endif %}
+              {% if dist_trim is not none %}
+                {% if dist_add is not none %} · {% endif %}
+                ↘ 减持 {{ '%+.1f' | format(dist_trim) }}
+              {% endif %}
+            </div>
+            {% endif %}
+          </td>
+          {% for key in ['fundamental', 'valuation', 'sentiment', 'liquidity', 'event'] %}
+            {% set component = detail.get(key, {}) %}
+            {% set value = component.get('value', theme.breakdown[key]) %}
+            <td>
+              <div class="score-main">{{ value | round(1) }}</div>
+              {% if component.fallback %}
+                <span class="badge badge-fallback" title="{{ component.reason or '数据缺口，使用中性值' }}">∅</span>
+              {% endif %}
+              {% if component.source %}
+                <div class="source-note">{{ component.source }}</div>
+              {% endif %}
+            </td>
+          {% endfor %}
         </tr>
       {% endfor %}
       </tbody>
     </table>
+    {% if thresholds %}
+      {% set add_th = thresholds.get('action_add') %}
+      {% set trim_th = thresholds.get('action_trim') %}
+      {% if add_th is not none or trim_th is not none %}
+      <p class="score-sub">
+        策略阈值：
+        {% if add_th is not none %}增持 ≥ {{ add_th }}{% endif %}
+        {% if add_th is not none and trim_th is not none %}，{% endif %}
+        {% if trim_th is not none %}减持 ≤ {{ trim_th }}{% endif %}
+      </p>
+      {% endif %}
+    {% endif %}
+    {% if themes %}
+    <h3>指标权重</h3>
+    <ul class="weights-list">
+      {% for theme in themes %}
+        {% set meta = theme.meta or {} %}
+        {% set weight_map = meta.get('weights', {}) %}
+        {% if weight_map %}
+        <li><strong>{{ theme.label }}</strong>：
+          {% for key, weight in weight_map.items() %}
+            {{ metric_labels.get(key, key) }} {{ '%.0f' | format(weight * 100) }}{% if not loop.last %}%，{% else %}%{% endif %}
+          {% endfor %}
+        </li>
+        {% endif %}
+      {% endfor %}
+    </ul>
+    {% endif %}
   </section>
   <section>
     <h2>操作建议</h2>
@@ -56,6 +128,29 @@
     {% endfor %}
     </ul>
   </section>
+  {% if etl_sources %}
+  <section>
+    <h2>数据状态</h2>
+    <table class="status-table">
+      <thead>
+        <tr>
+          <th>来源</th>
+          <th>状态</th>
+          <th>说明</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for src in etl_sources %}
+        <tr>
+          <td>{{ src.name }}</td>
+          <td class="{{ 'status-ok' if src.ok else 'status-fail' }}">{{ '正常' if src.ok else '降级' }}</td>
+          <td>{{ src.message }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
   <section>
     <h2>未来事件</h2>
     {% if events %}
@@ -65,9 +160,34 @@
       {% endfor %}
       </ul>
     {% else %}
-      <p>暂无可用事件数据。</p>
+      <p class="event-empty">暂无未来事件。</p>
     {% endif %}
   </section>
+  {% if sentiment %}
+  <section>
+    <h2>情绪细项</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>指标</th>
+          <th>分值</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>综合</td>
+          <td>{{ sentiment.score | round(1) }}</td>
+        </tr>
+        {% for key, value in sentiment.items() if key != 'score' %}
+        <tr>
+          <td>{{ sentiment_labels.get(key, key) }}</td>
+          <td>{{ value | round(1) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
   <footer>
     <p>报告自动生成时间：{{ generated_at }}</p>
   </footer>

@@ -155,6 +155,8 @@ uv run python tools/post_feishu.py \
   --card out/digest_card.json
 ```
 
+* 也可以直接运行`uv run python tools/post_feishu.py`，默认会开启推送总结（--summary out/digest_summary.txt）和飞书卡片（--card out/digest_card.json）
+
 可选设置 `FEISHU_SECRET` 以启用签名校验；缺少 Webhook 时脚本会安全退出并提示。
 
 ## 测试与质量保障

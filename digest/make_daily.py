@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 
@@ -14,6 +14,17 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 BASE_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = BASE_DIR / "out"
 TEMPLATE_DIR = BASE_DIR / "digest" / "templates"
+METRIC_LABELS = {
+    "fundamental": "基本面",
+    "valuation": "估值",
+    "sentiment": "情绪",
+    "liquidity": "资金",
+    "event": "事件",
+}
+SENTIMENT_LABELS = {
+    "put_call": "Cboe 认沽/认购",
+    "aaii": "AAII 多空差",
+}
 
 
 def _load_json(path: Path) -> Dict[str, object]:
@@ -118,12 +129,58 @@ def _render_report(env: Environment, payload: Dict[str, object]) -> str:
     return template.render(**payload)
 
 
+def _filter_future_events(events: List[Dict[str, object]], today: date) -> List[Dict[str, object]]:
+    future: List[Dict[str, object]] = []
+    for entry in events:
+        if not isinstance(entry, dict):
+            continue
+        raw_date = entry.get("date")
+        if not raw_date:
+            continue
+        try:
+            event_date = datetime.strptime(str(raw_date), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if event_date >= today:
+            item = dict(entry)
+            item["_date_obj"] = event_date
+            future.append(item)
+    future.sort(key=lambda item: item["_date_obj"])
+    for item in future:
+        item.pop("_date_obj", None)
+    return future[:20]
+
+
 def _build_summary_lines(themes: List[Dict[str, object]], actions: List[Dict[str, str]], degraded: bool) -> List[str]:
     lines = []
     if degraded:
         lines.append("⚠️ 数据延迟，以下为中性参考。")
     for theme in themes:
-        lines.append(f"{theme['label']} 总分 {theme['total']:.0f} ｜ 基本面 {theme['breakdown']['fundamental']:.0f}")
+        label = theme.get("label", theme.get("name", "主题"))
+        breakdown = theme.get("breakdown", {})
+        detail = theme.get("breakdown_detail", {})
+        meta = theme.get("meta", {})
+        total = theme.get("total")
+        if isinstance(total, (int, float)):
+            line = f"{label} 总分 {total:.0f}"
+        else:
+            line = f"{label} 总分 —"
+        delta = meta.get("delta")
+        if isinstance(delta, (int, float)):
+            line += f" (Δ {delta:+.1f})"
+        fundamental = breakdown.get("fundamental")
+        if isinstance(fundamental, (int, float)):
+            line += f"｜基本面 {fundamental:.0f}"
+        valuation_detail = detail.get("valuation", {})
+        valuation_value = breakdown.get("valuation")
+        if valuation_detail.get("fallback"):
+            line += "｜估值 ∅"
+        elif isinstance(valuation_value, (int, float)):
+            line += f"｜估值 {valuation_value:.0f}"
+        distance_to_add = meta.get("distance_to_add")
+        if isinstance(distance_to_add, (int, float)):
+            line += f"｜距增持 {distance_to_add:+.0f}"
+        lines.append(line)
     if actions:
         for action in actions:
             lines.append(f"操作：{action['action']} {action['name']}（{action['reason']}）")
@@ -168,6 +225,24 @@ def run(argv: List[str] | None = None) -> int:
 
     degraded = bool(scores.get("degraded")) or args.degraded
     date_str = scores.get("date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    try:
+        report_date = datetime.strptime(str(date_str), "%Y-%m-%d").date()
+    except ValueError:
+        report_date = datetime.now(timezone.utc).date()
+
+    themes = scores.get("themes", [])
+    actions = actions_payload.get("items", [])
+    events_future = _filter_future_events(scores.get("events", []), report_date)
+    etl_status = scores.get("etl_status", {})
+    etl_sources = []
+    if isinstance(etl_status, dict):
+        raw_sources = etl_status.get("sources", [])
+        if isinstance(raw_sources, list):
+            etl_sources = [src for src in raw_sources if isinstance(src, dict)]
+    sentiment_candidate = scores.get("sentiment")
+    sentiment_detail = sentiment_candidate if isinstance(sentiment_candidate, dict) else None
+    thresholds_candidate = scores.get("thresholds", {})
+    thresholds = thresholds_candidate if isinstance(thresholds_candidate, dict) else {}
 
     env = _build_env()
     _ensure_templates(env)
@@ -175,9 +250,14 @@ def run(argv: List[str] | None = None) -> int:
     payload = {
         "title": f"盘前播报{'（数据延迟）' if degraded else ''}",
         "date": date_str,
-        "themes": scores.get("themes", []),
-        "actions": actions_payload.get("items", []),
-        "events": scores.get("events", []),
+        "themes": themes,
+        "actions": actions,
+        "events": events_future,
+        "etl_sources": etl_sources,
+        "sentiment": sentiment_detail,
+        "thresholds": thresholds,
+        "metric_labels": METRIC_LABELS,
+        "sentiment_labels": SENTIMENT_LABELS,
         "degraded": degraded,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     }

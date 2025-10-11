@@ -51,6 +51,8 @@ flowchart TD
 
 更多业务背景与数据源说明见 [docs/data_source.md](docs/data_source.md)。
 
+> 由于网络环境所限，本项目默认不使用yfinance作为数据源
+
 ## 仓库与持久化布局
 
 ```text

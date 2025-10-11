@@ -257,6 +257,18 @@ def _coerce_api_key(value: Any) -> Optional[str]:
     return None
 
 
+def _env_truthy(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _yahoo_allowed() -> bool:
+    if os.getenv("DISABLE_YAHOO", "0") == "1":
+        return False
+    return _env_truthy(os.getenv("YFINANCE_FALLBACK"))
+
+
 def _rss_text(node: ET.Element, *paths: str) -> str:
     for path in paths:
         text = node.findtext(path)
@@ -1023,23 +1035,27 @@ def _fetch_hk_proxy_from_yahoo(symbol: str) -> Tuple[List[Dict[str, Any]], str]:
 def _fetch_hk_market_snapshot(api_keys: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], FetchStatus]:
     errors: List[str] = []
 
-    for fetcher in (_fetch_hsi_from_stooq, _fetch_hsi_from_yahoo):
+    fetchers: List[Callable[[], Tuple[List[Dict[str, Any]], str]]] = [_fetch_hsi_from_stooq]
+    if _yahoo_allowed():
+        fetchers.append(_fetch_hsi_from_yahoo)
+
+    for fetcher in fetchers:
         try:
             rows, message = fetcher()
             return rows, FetchStatus(name="hongkong_HSI", ok=True, message=message)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{fetcher.__name__}: {exc}")
 
-    for proxy in HK_PROXY_SYMBOLS:
-        try:
-            rows, message = _fetch_hk_proxy_from_yahoo(proxy)
-            return rows, FetchStatus(name="hongkong_HSI", ok=True, message=message)
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"{proxy}: {exc}")
+    if _yahoo_allowed():
+        for proxy in HK_PROXY_SYMBOLS:
+            try:
+                rows, message = _fetch_hk_proxy_from_yahoo(proxy)
+                return rows, FetchStatus(name="hongkong_HSI", ok=True, message=message)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{proxy}: {exc}")
 
     detail = "; ".join(errors) if errors else "未知原因"
     return [], FetchStatus(name="hongkong_HSI", ok=False, message=f"港股行情获取失败: {detail}")
-
 
 EDGAR_TICKER_URL = "https://www.sec.gov/files/company_tickers.json"
 EDGAR_COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
@@ -1412,7 +1428,7 @@ def _fetch_price_only_quotes(symbols: List[str], api_keys: Optional[Dict[str, An
     if api_keys:
         alpaca_key = _coerce_api_key(api_keys.get("alpaca_key_id"))
         alpaca_secret = _coerce_api_key(api_keys.get("alpaca_secret"))
-    yahoo_disabled = os.getenv("DISABLE_YAHOO", "0") == "1"
+    allow_yahoo = _yahoo_allowed()
     for symbol in symbols:
         snapshot: Optional[_QuoteSnapshot] = None
         try:
@@ -1424,7 +1440,7 @@ def _fetch_price_only_quotes(symbols: List[str], api_keys: Optional[Dict[str, An
                 snapshot = _fetch_quote_from_alpaca(symbol, alpaca_key, alpaca_secret)
             except Exception:  # noqa: BLE001
                 snapshot = None
-        if not snapshot and not yahoo_disabled:
+        if not snapshot and allow_yahoo:
             try:
                 snapshot = _fetch_quote_from_yahoo(symbol)
             except Exception:  # noqa: BLE001
@@ -1460,7 +1476,9 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
     quotes: Dict[str, Dict[str, Any]] = {}
     source = ""
     errors: List[str] = []
-    prefer_stooq = os.getenv("PREFER_STOOQ", "0") == "1"
+    allow_yahoo = _yahoo_allowed()
+    prefer_stooq_env = os.getenv("PREFER_STOOQ", "0") == "1"
+    prefer_stooq = prefer_stooq_env or not allow_yahoo
 
     if prefer_stooq:
         try:
@@ -1468,12 +1486,17 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
             source = "price_only"
         except Exception as exc:  # noqa: BLE001
             errors.append(f"price_only: {exc}")
-            try:
-                quotes = _fetch_yahoo_quotes(all_symbols)
-                source = "yahoo"
-            except Exception as fallback_exc:  # noqa: BLE001
-                errors.append(f"Yahoo: {fallback_exc}")
-                detail = "; ".join(errors) if errors else "未知原因"
+            if allow_yahoo:
+                try:
+                    quotes = _fetch_yahoo_quotes(all_symbols)
+                    source = "yahoo"
+                except Exception as fallback_exc:  # noqa: BLE001
+                    errors.append(f"Yahoo: {fallback_exc}")
+                    detail = "; ".join(errors) if errors else "未知原因"
+                    return {}, FetchStatus(name="fmp_theme", ok=False, message=f"主题估值获取失败: {detail}")
+            else:
+                detail = "; ".join(errors) if errors else "无可用行情来源"
+                detail = f"{detail}；已禁用 Yahoo 兜底"
                 return {}, FetchStatus(name="fmp_theme", ok=False, message=f"主题估值获取失败: {detail}")
     else:
         try:
@@ -1630,7 +1653,7 @@ def _resolve_index_quote(symbol: str, api_keys: Dict[str, Any]) -> _QuoteSnapsho
     fmp_key = _coerce_api_key(api_keys.get("financial_modeling_prep"))
     twelve_key = _coerce_api_key(api_keys.get("twelve_data"))
     alpha_key = _coerce_api_key(api_keys.get("alpha_vantage"))
-    yahoo_disabled = os.getenv("DISABLE_YAHOO", "0") == "1"
+    allow_yahoo = _yahoo_allowed()
 
     fetchers: List[Tuple[str, Callable[[], _QuoteSnapshot]]] = []
     added: set[str] = set()
@@ -1648,7 +1671,7 @@ def _resolve_index_quote(symbol: str, api_keys: Dict[str, Any]) -> _QuoteSnapsho
             fetchers.append(("alpha_vantage", lambda key=alpha_key: _fetch_quote_from_alpha(symbol, key)))
             added.add("alpha_vantage")
 
-    if not yahoo_disabled:
+    if allow_yahoo:
         fetchers.append(("yahoo", lambda: _fetch_quote_from_yahoo(symbol)))
     return _attempt_quote(fetchers)
 
@@ -1663,7 +1686,7 @@ def _resolve_equity_quote(symbol: str, api_keys: Dict[str, Any]) -> _QuoteSnapsh
     alpha_key = _coerce_api_key(api_keys.get("alpha_vantage"))
     alpaca_key = _coerce_api_key(api_keys.get("alpaca_key_id"))
     alpaca_secret = _coerce_api_key(api_keys.get("alpaca_secret"))
-    yahoo_disabled = os.getenv("DISABLE_YAHOO", "0") == "1"
+    allow_yahoo = _yahoo_allowed()
 
     fetchers: List[Tuple[str, Callable[[], _QuoteSnapshot]]] = []
     added: set[str] = set()
@@ -1686,7 +1709,7 @@ def _resolve_equity_quote(symbol: str, api_keys: Dict[str, Any]) -> _QuoteSnapsh
             fetchers.append(("alpha_vantage", lambda key=alpha_key: _fetch_quote_from_alpha(symbol, key)))
             added.add("alpha_vantage")
 
-    if not yahoo_disabled:
+    if allow_yahoo:
         fetchers.append(("yahoo", lambda: _fetch_quote_from_yahoo(symbol)))
     return _attempt_quote(fetchers)
 

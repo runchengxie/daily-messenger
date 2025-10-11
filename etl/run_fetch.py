@@ -1365,10 +1365,10 @@ def _fetch_price_only_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
     for symbol in symbols:
         snapshot: Optional[_QuoteSnapshot] = None
         try:
-            snapshot = _fetch_quote_from_yahoo(symbol)
+            snapshot = _fetch_quote_from_stooq(symbol)
         except Exception:  # noqa: BLE001
             try:
-                snapshot = _fetch_quote_from_stooq(symbol)
+                snapshot = _fetch_quote_from_yahoo(symbol)
             except Exception:  # noqa: BLE001
                 snapshot = None
         if not snapshot:
@@ -1401,19 +1401,34 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
     quotes: Dict[str, Dict[str, Any]] = {}
     source = ""
     errors: List[str] = []
+    prefer_stooq = os.getenv("PREFER_STOOQ", "0") == "1"
 
-    try:
-        quotes = _fetch_yahoo_quotes(all_symbols)
-        source = "yahoo"
-    except Exception as exc:  # noqa: BLE001
-        errors.append(f"Yahoo: {exc}")
+    if prefer_stooq:
         try:
             quotes = _fetch_price_only_quotes(all_symbols)
             source = "price_only"
-        except Exception as fallback_exc:  # noqa: BLE001
-            errors.append(f"price_only: {fallback_exc}")
-            detail = "; ".join(errors) if errors else "未知原因"
-            return {}, FetchStatus(name="fmp_theme", ok=False, message=f"主题估值获取失败: {detail}")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"price_only: {exc}")
+            try:
+                quotes = _fetch_yahoo_quotes(all_symbols)
+                source = "yahoo"
+            except Exception as fallback_exc:  # noqa: BLE001
+                errors.append(f"Yahoo: {fallback_exc}")
+                detail = "; ".join(errors) if errors else "未知原因"
+                return {}, FetchStatus(name="fmp_theme", ok=False, message=f"主题估值获取失败: {detail}")
+    else:
+        try:
+            quotes = _fetch_yahoo_quotes(all_symbols)
+            source = "yahoo"
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"Yahoo: {exc}")
+            try:
+                quotes = _fetch_price_only_quotes(all_symbols)
+                source = "price_only"
+            except Exception as fallback_exc:  # noqa: BLE001
+                errors.append(f"price_only: {fallback_exc}")
+                detail = "; ".join(errors) if errors else "未知原因"
+                return {}, FetchStatus(name="fmp_theme", ok=False, message=f"主题估值获取失败: {detail}")
 
     fundamentals: Dict[str, Dict[str, Optional[float]]] = {}
     missing_cik: List[str] = []
@@ -1440,10 +1455,16 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
             change_values.append(_safe_float(quote.get("changesPercentage")))
             price = _safe_float(quote.get("price"))
             market_cap = _safe_float(quote.get("marketCap"))
-            if market_cap is not None:
-                market_cap_total += market_cap
 
             metrics = fundamentals.get(symbol.upper()) if fundamentals else None
+            if (market_cap in (None, 0.0)) and (price is not None) and metrics:
+                shares = _safe_float(metrics.get("shares_diluted_latest"))
+                if shares not in (None, 0.0):
+                    market_cap = float(price) * float(shares)
+                    quote["marketCap"] = market_cap
+            if market_cap not in (None, 0.0):
+                market_cap_total += float(market_cap)
+
             computed_pe: Optional[float] = None
             computed_ps: Optional[float] = None
             computed_pb: Optional[float] = None
@@ -1501,8 +1522,14 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
         return {}, FetchStatus(name="fmp_theme", ok=False, message="主题估值数据为空")
 
     if source == "price_only":
-        message = "主题估值使用价格兜底，PE/PS/市值为空"
         status_ok = True
+        if fundamentals:
+            message = "主题估值使用 Stooq 价格兜底 + EDGAR 财报"
+        else:
+            message = "主题估值使用 Stooq 价格兜底，仅含行情字段"
+        if errors:
+            detail = "; ".join(errors)
+            message = f"{message}（{detail}）"
     else:
         status_ok = True
         issue_items: List[str] = []

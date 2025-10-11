@@ -18,7 +18,10 @@ import requests
 def _read_file(path: str | None) -> str:
     if not path:
         return ""
-    data = Path(path).read_text(encoding="utf-8")
+    file_path = Path(path)
+    if not file_path.exists():
+        return ""
+    data = file_path.read_text(encoding="utf-8")
     return data.strip()
 
 
@@ -56,19 +59,43 @@ def _build_payload(args: argparse.Namespace, summary: str, card: str | None) -> 
 
 def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Push message to Feishu webhook")
-    parser.add_argument("--webhook", required=True, help="飞书自定义机器人 Webhook")
-    parser.add_argument("--summary", help="摘要文本路径")
-    parser.add_argument("--card", help="互动卡片 JSON 文件路径")
+    from pathlib import Path as _P
+
+    base_dir = _P(__file__).resolve().parents[1]
+    out_dir = base_dir / "out"
+    parser.add_argument(
+        "--webhook",
+        default=os.getenv("FEISHU_WEBHOOK"),
+        help="飞书自定义机器人 Webhook（可从 FEISHU_WEBHOOK 读取）",
+    )
+    parser.add_argument(
+        "--summary",
+        default=str(out_dir / "digest_summary.txt"),
+        help="摘要文本路径（默认 out/digest_summary.txt）",
+    )
+    parser.add_argument(
+        "--card",
+        default=str(out_dir / "digest_card.json"),
+        help="互动卡片 JSON 文件路径（默认 out/digest_card.json）",
+    )
     parser.add_argument("--secret", default=os.getenv("FEISHU_SECRET"), help="签名密钥")
-    parser.add_argument("--mode", choices=["interactive", "post"], default="interactive")
+    parser.add_argument("--mode", choices=["interactive", "post"], default=None)
     parser.add_argument("--title", help="备用标题（post 模式使用）")
     args = parser.parse_args(argv)
 
     summary = _read_file(args.summary)
-    card = _read_file(args.card) if args.card else None
+    card_text = _read_file(args.card)
+    if args.mode is None:
+        card_path = _P(args.card) if args.card else None
+        args.mode = "interactive" if card_path and card_path.exists() else "post"
+    card = card_text or None
 
     payload = _build_payload(args, summary, card)
     payload.update(_sign_if_needed(args.secret))
+
+    if not args.webhook:
+        print("缺少 FEISHU_WEBHOOK，跳过推送。")
+        return 0
 
     resp = requests.post(args.webhook, json=payload, timeout=10)
     if resp.status_code != 200:

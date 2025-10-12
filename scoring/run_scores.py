@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 import os
 import sys
@@ -13,6 +14,9 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import yaml
+
+from common import run_meta
+from common.logging import log, setup_logger
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
@@ -66,6 +70,9 @@ class ThemeScore:
 
 
 def _current_trading_day() -> str:
+    override = os.getenv("DM_OVERRIDE_DATE")
+    if override:
+        return override
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
@@ -73,7 +80,11 @@ def _load_config() -> Dict[str, object]:
     if not CONFIG_PATH.exists():
         raise FileNotFoundError(f"缺少配置文件: {CONFIG_PATH}")
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+    if not isinstance(config, dict):
+        raise ValueError("配置文件格式错误，期待字典结构")
+    config.setdefault("version", 0)
+    return config
 
 
 def _load_json(path: Path) -> Dict[str, object]:
@@ -402,16 +413,26 @@ def run(argv: List[str] | None = None) -> int:
     parser.add_argument("--force", action="store_true", help="忽略幂等标记，强制重新计算")
     args = parser.parse_args(argv)
 
+    logger = setup_logger("scoring")
+    started_at = datetime.now(timezone.utc)
+
     trading_day = _current_trading_day()
+    logger = setup_logger("scoring", trading_day=trading_day)
+    log(logger, logging.INFO, "scoring_start", force=args.force)
+    run_meta.record_step(OUT_DIR, "scoring", "started", trading_day=trading_day, force=args.force)
+
     state_path = STATE_DIR / f"done_{trading_day}"
 
     if state_path.exists() and not args.force:
-        print(f"检测到 {trading_day} 已经生成过结果，跳过计算。")
+        log(logger, logging.INFO, "scoring_skip_cached", state_path=str(state_path))
+        run_meta.record_step(OUT_DIR, "scoring", "cached", trading_day=trading_day)
         return 0
 
     config = _load_config()
     weights = config.get("weights", {})
     thresholds = config.get("thresholds", {})
+    config_version = config.get("version")
+    config_changed_at = config.get("changed_at")
 
     raw_market = _load_json(OUT_DIR / "raw_market.json")
     raw_events = _load_json(OUT_DIR / "raw_events.json")
@@ -420,12 +441,20 @@ def run(argv: List[str] | None = None) -> int:
     degraded = not etl_status.get("ok", False)
     if not raw_market:
         degraded = True
-        print("未找到行情数据，使用降级模式。", file=sys.stderr)
+        log(logger, logging.WARNING, "scoring_missing_market_data")
     if not raw_events:
-        print("未找到事件数据，将在报告中提示。", file=sys.stderr)
+        log(logger, logging.WARNING, "scoring_missing_events")
 
     if degraded and os.getenv("STRICT"):
-        print("STRICT 模式启用：检测到数据降级，立即退出。", file=sys.stderr)
+        log(logger, logging.ERROR, "scoring_strict_abort", strict=True)
+        run_meta.record_step(
+            OUT_DIR,
+            "scoring",
+            "failed",
+            trading_day=trading_day,
+            degraded=True,
+            strict=True,
+        )
         return 2
 
     sentiment_node = raw_market.get("sentiment", {}) if isinstance(raw_market, dict) else {}
@@ -547,6 +576,10 @@ def run(argv: List[str] | None = None) -> int:
         "thresholds": thresholds,
         "etl_status": etl_status,
     }
+    if config_version is not None:
+        scores_payload["config_version"] = config_version
+    if config_changed_at:
+        scores_payload["config_changed_at"] = config_changed_at
     if sentiment_result:
         scores_payload["sentiment"] = sentiment_result.to_dict()
 
@@ -566,8 +599,34 @@ def run(argv: List[str] | None = None) -> int:
     state_path.write_text(trading_day, encoding="utf-8")
 
     for theme in themes:
-        print(f"{theme.label} 主题总分: {theme.total:.1f}")
-    print("打分计算完成，结果已写入 out/ 目录。")
+        log(
+            logger,
+            logging.INFO,
+            "theme_score",
+            theme=theme.name,
+            label=theme.label,
+            total=round(theme.total, 2),
+            degraded=theme.degraded,
+        )
+    duration = (datetime.now(timezone.utc) - started_at).total_seconds()
+    log(
+        logger,
+        logging.INFO,
+        "scoring_complete",
+        degraded=degraded,
+        themes=len(themes),
+        duration_seconds=round(duration, 2),
+        config_version=config_version,
+    )
+    run_meta.record_step(
+        OUT_DIR,
+        "scoring",
+        "completed",
+        trading_day=trading_day,
+        degraded=degraded,
+        duration_seconds=round(duration, 2),
+        config_version=config_version,
+    )
     return 0
 
 

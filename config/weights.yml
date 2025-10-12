@@ -1,3 +1,6 @@
+version: 3
+changed_at: "2024-07-01"
+
 weights:
   default:
     fundamental: 0.3

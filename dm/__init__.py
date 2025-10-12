@@ -1,0 +1,1 @@
+"""Daily Messenger CLI package."""

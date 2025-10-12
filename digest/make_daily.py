@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Dict, List
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Mapping
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from common import run_meta
+from common.logging import log, setup_logger
+
+from jinja2 import ChoiceLoader, Environment, FileSystemLoader, PackageLoader, select_autoescape
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = BASE_DIR / "out"
@@ -27,6 +32,71 @@ SENTIMENT_LABELS = {
 }
 
 
+@dataclass
+class ThemePayload:
+    name: str
+    label: str
+    total: float
+    breakdown: Dict[str, float]
+    breakdown_detail: Dict[str, Dict[str, object]] = field(default_factory=dict)
+    meta: Dict[str, object] = field(default_factory=dict)
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> "ThemePayload":
+        try:
+            name = str(data["name"])
+        except KeyError as exc:  # noqa: B904
+            raise ValueError("主题缺少 name 字段") from exc
+        label = str(data.get("label", name))
+        total = float(data.get("total", 0.0))
+        breakdown_raw = data.get("breakdown", {})
+        breakdown: Dict[str, float] = {}
+        if isinstance(breakdown_raw, Mapping):
+            for key, value in breakdown_raw.items():
+                try:
+                    breakdown[str(key)] = float(value)
+                except (TypeError, ValueError):
+                    continue
+        detail_raw = data.get("breakdown_detail", {})
+        if isinstance(detail_raw, Mapping):
+            detail = {str(k): dict(v) for k, v in detail_raw.items() if isinstance(v, Mapping)}
+        else:
+            detail = {}
+        meta_raw = data.get("meta")
+        meta = dict(meta_raw) if isinstance(meta_raw, Mapping) else {}
+        return cls(name=name, label=label, total=total, breakdown=breakdown, breakdown_detail=detail, meta=meta)
+
+    def to_mapping(self) -> Dict[str, object]:
+        return {
+            "name": self.name,
+            "label": self.label,
+            "total": self.total,
+            "breakdown": self.breakdown,
+            "breakdown_detail": self.breakdown_detail,
+            "meta": self.meta,
+        }
+
+
+@dataclass
+class ActionPayload:
+    action: str
+    name: str
+    reason: str
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> "ActionPayload":
+        try:
+            action = str(data["action"])
+            name = str(data["name"])
+        except KeyError as exc:  # noqa: B904
+            raise ValueError("操作项缺少 action/name 字段") from exc
+        reason = str(data.get("reason", ""))
+        return cls(action=action, name=name, reason=reason)
+
+    def to_mapping(self) -> Dict[str, str]:
+        return {"action": self.action, "name": self.name, "reason": self.reason}
+
+
 def _load_json(path: Path) -> Dict[str, object]:
     if not path.exists():
         raise FileNotFoundError(f"缺少输入文件: {path}")
@@ -34,94 +104,39 @@ def _load_json(path: Path) -> Dict[str, object]:
         return json.load(f)
 
 
+def _coerce_themes(raw: object) -> List[Dict[str, object]]:
+    themes: List[Dict[str, object]] = []
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, Mapping):
+                continue
+            try:
+                themes.append(ThemePayload.from_mapping(item).to_mapping())
+            except ValueError:
+                continue
+    return themes
+
+
+def _coerce_actions(raw: object) -> List[Dict[str, str]]:
+    actions: List[Dict[str, str]] = []
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, Mapping):
+                continue
+            try:
+                actions.append(ActionPayload.from_mapping(item).to_mapping())
+            except ValueError:
+                continue
+    return actions
+
+
 def _build_env() -> Environment:
-    TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
-    loader = FileSystemLoader(str(TEMPLATE_DIR))
+    loaders = []
+    if TEMPLATE_DIR.exists():
+        loaders.append(FileSystemLoader(str(TEMPLATE_DIR)))
+    loaders.append(PackageLoader("digest", "templates"))
+    loader = loaders[0] if len(loaders) == 1 else ChoiceLoader(loaders)
     return Environment(loader=loader, autoescape=select_autoescape(["html", "xml"]))
-
-
-def _ensure_templates(env: Environment) -> None:
-    index_template = TEMPLATE_DIR / "report.html.j2"
-    if not index_template.exists():
-        index_template.write_text(
-            """<!DOCTYPE html>
-<html lang=\"zh\">
-<head>
-  <meta charset=\"utf-8\">
-  <title>{{ title }}</title>
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-  <style>
-    body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; margin: 2rem; color: #1f2933; }
-    h1 { color: #2563eb; }
-    table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
-    th, td { border: 1px solid #d1d5db; padding: 0.5rem; text-align: left; }
-    th { background: #eff6ff; }
-    .degraded { color: #d97706; font-weight: 600; }
-  </style>
-</head>
-<body>
-  <h1>{{ title }}</h1>
-  <p>日期：{{ date }}</p>
-  {% if degraded %}
-  <p class=\"degraded\">⚠️ 数据存在缺口，以下结论仅供参考，请谨慎操作。</p>
-  {% endif %}
-  <section>
-    <h2>主题评分</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>主题</th>
-          <th>总分</th>
-          <th>基本面</th>
-          <th>估值</th>
-          <th>情绪</th>
-          <th>资金</th>
-          <th>事件</th>
-        </tr>
-      </thead>
-      <tbody>
-      {% for theme in themes %}
-        <tr>
-          <td>{{ theme.label }}</td>
-          <td>{{ '%.1f' | format(theme.total) }}</td>
-          <td>{{ theme.breakdown.fundamental | round(1) }}</td>
-          <td>{{ theme.breakdown.valuation | round(1) }}</td>
-          <td>{{ theme.breakdown.sentiment | round(1) }}</td>
-          <td>{{ theme.breakdown.liquidity | round(1) }}</td>
-          <td>{{ theme.breakdown.event | round(1) }}</td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-  </section>
-  <section>
-    <h2>操作建议</h2>
-    <ul>
-    {% for action in actions %}
-      <li><strong>{{ action.action }}</strong> {{ action.name }} —— {{ action.reason }}</li>
-    {% endfor %}
-    </ul>
-  </section>
-  <section>
-    <h2>未来事件</h2>
-    {% if events %}
-      <ul>
-      {% for event in events %}
-        <li>{{ event.date }} · {{ event.title }} · 影响级别：{{ event.impact }}</li>
-      {% endfor %}
-      </ul>
-    {% else %}
-      <p>暂无可用事件数据。</p>
-    {% endif %}
-  </section>
-  <footer>
-    <p>报告自动生成时间：{{ generated_at }}</p>
-  </footer>
-</body>
-</html>
-""",
-            encoding="utf-8",
-        )
 
 
 def _render_report(env: Environment, payload: Dict[str, object]) -> str:
@@ -220,6 +235,9 @@ def run(argv: List[str] | None = None) -> int:
     parser.add_argument("--degraded", action="store_true", help="强制输出降级版本")
     args = parser.parse_args(argv)
 
+    logger = setup_logger("digest")
+    started_at = datetime.now(timezone.utc)
+
     scores = _load_json(OUT_DIR / "scores.json")
     actions_payload = _load_json(OUT_DIR / "actions.json")
 
@@ -230,8 +248,12 @@ def run(argv: List[str] | None = None) -> int:
     except ValueError:
         report_date = datetime.now(timezone.utc).date()
 
-    themes = scores.get("themes", [])
-    actions = actions_payload.get("items", [])
+    logger = setup_logger("digest", date=date_str)
+    log(logger, logging.INFO, "digest_start", degraded=degraded)
+    run_meta.record_step(OUT_DIR, "digest", "started", date=date_str, degraded=degraded)
+
+    themes = _coerce_themes(scores.get("themes"))
+    actions = _coerce_actions(actions_payload.get("items"))
     events_future = _filter_future_events(scores.get("events", []), report_date)
     etl_status = scores.get("etl_status", {})
     etl_sources = []
@@ -245,7 +267,6 @@ def run(argv: List[str] | None = None) -> int:
     thresholds = thresholds_candidate if isinstance(thresholds_candidate, dict) else {}
 
     env = _build_env()
-    _ensure_templates(env)
 
     payload = {
         "title": f"盘前播报{'（数据延迟）' if degraded else ''}",
@@ -283,9 +304,27 @@ def run(argv: List[str] | None = None) -> int:
     card_payload = _build_card_payload(card_title, summary_lines or ["今日暂无摘要"], report_url)
     (OUT_DIR / "digest_card.json").write_text(json.dumps(card_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print("报告已生成，包括 HTML、摘要与卡片 JSON。")
+    duration = (datetime.now(timezone.utc) - started_at).total_seconds()
+    log(
+        logger,
+        logging.INFO,
+        "digest_complete",
+        degraded=degraded,
+        summary_lines=len(summary_lines),
+        duration_seconds=round(duration, 2),
+        summary_path=str(OUT_DIR / "digest_summary.txt"),
+        card_path=str(OUT_DIR / "digest_card.json"),
+    )
     if degraded:
-        print("当前处于降级模式，提醒用户谨慎操作。")
+        log(logger, logging.WARNING, "digest_degraded_output", reason="degraded flag or downstream status")
+    run_meta.record_step(
+        OUT_DIR,
+        "digest",
+        "completed",
+        degraded=degraded,
+        duration_seconds=round(duration, 2),
+        summary_lines=len(summary_lines),
+    )
     return 0
 
 

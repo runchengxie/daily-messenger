@@ -32,4 +32,12 @@ include = [
   "scoring*",
   "etl*",
   "tools*",
+  "common*",
+  "dm*",
 ]
+
+[tool.setuptools.package-data]
+"digest" = ["templates/*.j2"]
+
+[project.scripts]
+dm = "dm.cli:main"

@@ -99,6 +99,11 @@ def test_run_generates_digest_outputs(tmp_path: Path, monkeypatch: pytest.Monkey
     card_payload = json.loads((tmp_path / "digest_card.json").read_text(encoding="utf-8"))
     assert card_payload["elements"][1]["actions"][0]["url"] == "https://acme.github.io/daily-messenger/2024-04-01.html"
 
+    meta = json.loads((tmp_path / "run_meta.json").read_text(encoding="utf-8"))
+    digest_meta = meta["steps"]["digest"]
+    assert digest_meta["status"] == "completed"
+    assert not digest_meta.get("degraded")
+
 
 def test_run_with_degraded_flag_marks_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(digest, "OUT_DIR", tmp_path)
@@ -132,8 +137,19 @@ def test_run_with_degraded_flag_marks_outputs(tmp_path: Path, monkeypatch: pytes
     exit_code = digest.run(["--degraded"])
 
     assert exit_code == 0
+    assert (tmp_path / "index.html").exists()
+    assert (tmp_path / "2024-04-03.html").exists()
+
+    html = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert "数据延迟" in html
+
     summary_text = (tmp_path / "digest_summary.txt").read_text(encoding="utf-8")
     assert summary_text.startswith("⚠️ 数据延迟")
 
     card_payload = json.loads((tmp_path / "digest_card.json").read_text(encoding="utf-8"))
     assert "（数据延迟）" in card_payload["header"]["title"]["content"]
+
+    meta = json.loads((tmp_path / "run_meta.json").read_text(encoding="utf-8"))
+    digest_meta = meta["steps"]["digest"]
+    assert digest_meta["status"] == "completed"
+    assert digest_meta.get("degraded")

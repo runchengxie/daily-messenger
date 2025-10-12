@@ -85,7 +85,7 @@ repo/
    * `API_KEYS='{"alpha_vantage":"...","finnhub":"..."}'`
    * 环境变量形式：`ALPHA_VANTAGE=...`、`TRADING_ECONOMICS_USER=...` 等
 
-   支持键：`alpha_vantage`、`twelve_data`、`financial_modeling_prep`、`trading_economics`、`finnhub`、`ai_feeds`、`arxiv`、`coinbase`、`okx`。
+   支持键：`alpha_vantage`、`twelve_data`、`financial_modeling_prep`、`trading_economics`、`finnhub`、`ai_feeds`、`arxiv`、`coinbase`、`okx`、`sosovalue`、`alpaca_key_id`、`alpaca_secret`。
 
 3. 调整权重与阈值：修改 `config/weights.yml` 并同步更新测试断言（见 `tests/`）。
 
@@ -96,10 +96,10 @@ repo/
 ### 使用 uv（推荐）
 
 ```bash
-uv sync
+uv sync --locked --no-dev
 ```
 
-`uv sync` 会根据 `pyproject.toml` 与 `uv.lock` 创建隔离环境（默认 `.venv/`），并安装运行时依赖；并自动将`dev`作为默认组，额外拉取测试与工具链。如不需`dev`依赖，可以选择`uv sync --no-dev`显式关闭该默认行为。此外，可使用 `uv run <command>` 在同一环境内执行脚本。
+`uv sync --locked --no-dev` 会根据 `pyproject.toml` 与 `uv.lock` 创建隔离环境（默认 `.venv/`），仅安装运行时依赖，确保与 CI 工作流一致。若需本地调试与质量工具，可额外运行 `uv sync --locked --extra dev` 拉取开发依赖。此外，可使用 `uv run <command>` 在同一环境内执行脚本。
 
 ### 使用 venv + pip（备选）
 
@@ -112,15 +112,25 @@ pip install pytest pytest-cov ruff
 
 ## 本地运行流水线
 
+推荐使用统一 CLI 一键跑完整流水线：
+
 ```bash
-# 1. 抓取行情、情绪、事件（必要时附加 --force 刷新当日缓存）
-uv run python etl/run_fetch.py
+uv run dm run --force-score
+```
 
-# 2. 计算三大主题得分与操作建议
-uv run python scoring/run_scores.py --force
+常见参数：
 
-# 3. 渲染网页、摘要与飞书卡片（--degraded 可强制提示数据缺口）
-uv run python digest/make_daily.py
+* `--date 2024-04-01`：覆盖交易日，供回溯测试使用。
+* `--force-fetch` / `--force-score`：跳过幂等标记，强制刷新。
+* `--degraded`：在渲染阶段标记降级输出。
+* `--disable-throttle`：禁用抓取端的节流休眠（CI 环境可减少等待）。
+
+保留原始子命令亦可单独执行：
+
+```bash
+uv run python etl/run_fetch.py                # 抓取行情、情绪、事件
+uv run python scoring/run_scores.py --force   # 计算主题得分与建议
+uv run python digest/make_daily.py            # 渲染网页、摘要、卡片
 ```
 
 执行完成后，`out/` 目录包含：
@@ -135,13 +145,17 @@ uv run python digest/make_daily.py
 
 * `digest_card.json`（飞书互动卡片结构体）
 
+* `run_meta.json`（本次流水线的机器可读运行元数据）
+
 ## 幂等控制与降级提示
 
 * `state/fetch_YYYY-MM-DD`：标记当日 ETL 已完成，避免重复访问数据源。
 
-* `state/done_YYYY-MM-DD`：标记评分完成，若需重跑使用 `--force` 删除标记。
+* `state/done_YYYY-MM-DD`：标记评分完成，若需重跑使用 `--force` 忽略标记并重算。
 
 * `state/sentiment_history.json`：累积 Put/Call、AAII 等情绪序列，用于平滑得分。
+
+* `run_meta.json`：记录各阶段状态、耗时、降级标记等，供持续观测与排障使用。
 
 * 降级触发条件：`out/etl_status.json` 中任一 `ok=false`、`scores.json` 标记 `degraded=true`、命令行传入 `--degraded`。降级状态会在网页、摘要与卡片中显著提示。
 
@@ -155,9 +169,15 @@ uv run python tools/post_feishu.py \
   --card out/digest_card.json
 ```
 
-* 也可以直接运行`uv run python tools/post_feishu.py`，默认会开启推送总结（--summary out/digest_summary.txt）和飞书卡片（--card out/digest_card.json）
+* 也可以直接运行`uv run python tools/post_feishu.py`，若 `out/digest_card.json` 存在则发送互动卡片，否则发送文本摘要（默认读取 `out/digest_summary.txt`）。
 
 可选设置 `FEISHU_SECRET` 以启用签名校验；缺少 Webhook 时脚本会安全退出并提示。
+
+## 日志与观测
+
+* 全部入口脚本使用结构化 JSON 日志输出(`stdout`)，字段包含 `run_id`、`component`、`trading_day` 等，方便在 CI/日志平台聚合检索。可自定义 `DM_RUN_ID=<uuid>` 以串联多步流水数据。
+* `out/run_meta.json` 记录每个阶段的状态、耗时与降级标记，适合接入额外的监控或趋势分析。
+* 抓取阶段的节流可通过 `DM_DISABLE_THROTTLE=1` 显式关闭（默认遵循配置或内置延迟，建议仅在受控环境使用）。
 
 ## 测试与质量保障
 

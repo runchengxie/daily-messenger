@@ -7,12 +7,15 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import time
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict
 
 import requests
+
+from common.logging import log, setup_logger
 
 
 def _read_file(path: str | None) -> str:
@@ -83,6 +86,8 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("--title", help="备用标题（post 模式使用）")
     args = parser.parse_args(argv)
 
+    logger = setup_logger("feishu")
+
     summary = _read_file(args.summary)
     card_text = _read_file(args.card)
     if args.mode is None:
@@ -94,20 +99,33 @@ def run(argv: list[str] | None = None) -> int:
     payload.update(_sign_if_needed(args.secret))
 
     if not args.webhook:
-        print("缺少 FEISHU_WEBHOOK，跳过推送。")
+        log(logger, logging.INFO, "feishu_skip_missing_webhook")
         return 0
 
     resp = requests.post(args.webhook, json=payload, timeout=10)
     if resp.status_code != 200:
-        print(f"发送失败，状态码 {resp.status_code}，响应：{resp.text}")
+        log(
+            logger,
+            logging.ERROR,
+            "feishu_http_error",
+            status_code=resp.status_code,
+            response=resp.text[:500],
+        )
         return 1
 
     body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
     if body.get("StatusCode", 0) != 0:
-        print(f"飞书返回错误：{body}")
+        log(logger, logging.ERROR, "feishu_business_error", response=body)
         return 1
 
-    print("飞书通知发送完成。")
+    log(
+        logger,
+        logging.INFO,
+        "feishu_push_completed",
+        mode=args.mode,
+        has_card=bool(card),
+        summary_length=len(summary.splitlines()),
+    )
     return 0
 
 

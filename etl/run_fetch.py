@@ -10,11 +10,12 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import os
 import sys
 import time
 from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -24,6 +25,9 @@ from xml.etree import ElementTree as ET
 
 import pytz
 import requests
+
+from common import run_meta
+from common.logging import log, setup_logger
 
 if __package__:
     from .fetchers import aaii_sentiment, cboe_putcall
@@ -84,6 +88,14 @@ DEFAULT_ARXIV_PARAMS = {
 
 DEFAULT_ARXIV_THROTTLE = 3.0
 
+THROTTLE_DISABLED = os.getenv("DM_DISABLE_THROTTLE", "").lower() in {"1", "true", "yes"}
+
+
+def _sleep(seconds: float) -> None:
+    if seconds <= 0 or THROTTLE_DISABLED:
+        return
+    time.sleep(seconds)
+
 
 @dataclass
 class FetchStatus:
@@ -105,6 +117,9 @@ def _ensure_out_dir() -> None:
 
 
 def _current_trading_day() -> str:
+    override = os.getenv("DM_OVERRIDE_DATE")
+    if override:
+        return override
     tz = pytz.timezone("America/Los_Angeles")
     now = datetime.now(tz)
     return now.strftime("%Y-%m-%d")
@@ -123,7 +138,39 @@ CANONICAL_API_KEYS = (
 )
 
 
-def _load_api_keys() -> Dict[str, Any]:
+class ApiKeyValidationError(Exception):
+    def __init__(self, errors: Dict[str, str]) -> None:
+        super().__init__("API key validation failed")
+        self.errors = errors
+
+
+def _normalize_api_keys(payload: Dict[str, Any]) -> Dict[str, str]:
+    errors: Dict[str, str] = {}
+    normalized: Dict[str, str] = {}
+    extras: Dict[str, Any] = {}
+    canonical = set(CANONICAL_API_KEYS)
+    for key, value in payload.items():
+        if key in canonical:
+            if value is None:
+                continue
+            if not isinstance(value, str):
+                errors[key] = "expected string value"
+                continue
+            stripped = value.strip()
+            if not stripped:
+                errors[key] = "empty string"
+                continue
+            normalized[key] = stripped
+        else:
+            extras[key] = value
+    if errors:
+        raise ApiKeyValidationError(errors)
+    result: Dict[str, Any] = dict(normalized)
+    result.update(extras)
+    return result
+
+
+def _load_api_keys(logger: logging.Logger | None) -> Dict[str, str]:
     data: Dict[str, Any] = {}
 
     # 1) Optional JSON file referenced via API_KEYS_PATH
@@ -141,7 +188,8 @@ def _load_api_keys() -> Dict[str, Any]:
             except FileNotFoundError:
                 continue
             except Exception as exc:  # noqa: BLE001
-                print(f"API_KEYS_PATH 读取失败: {exc}", file=sys.stderr)
+                if logger:
+                    log(logger, logging.WARNING, "api_keys_path_failed", path=str(candidate), error=str(exc))
                 continue
             if isinstance(payload, dict):
                 data.update(payload)
@@ -153,7 +201,8 @@ def _load_api_keys() -> Dict[str, Any]:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
-            print(f"API_KEYS 无法解析为 JSON: {exc}", file=sys.stderr)
+            if logger:
+                log(logger, logging.ERROR, "api_keys_inline_invalid_json", error=str(exc))
         else:
             if isinstance(payload, dict):
                 data.update(payload)
@@ -176,7 +225,19 @@ def _load_api_keys() -> Dict[str, Any]:
         if te_user and te_password:
             data["trading_economics"] = f"{te_user}:{te_password}"
 
-    return data
+    try:
+        normalized = _normalize_api_keys(data)
+    except ApiKeyValidationError as exc:
+        for key, reason in exc.errors.items():
+            if logger:
+                log(logger, logging.WARNING, "api_key_invalid_entry", key=key, reason=reason)
+        normalized = {k: v for k, v in data.items() if isinstance(v, str) and v.strip()}
+
+    extra_keys = sorted(set(normalized) - set(CANONICAL_API_KEYS))
+    if extra_keys:
+        if logger:
+            log(logger, logging.INFO, "api_key_extra_entries", keys=extra_keys)
+    return normalized
 
 
 def _resolve_ai_feeds(config: Dict[str, Any]) -> List[str]:
@@ -217,13 +278,19 @@ def _resolve_arxiv_config(config: Dict[str, Any]) -> Tuple[Dict[str, Any], float
     return request_params, throttle
 
 
-def _load_configuration() -> Tuple[Dict[str, Any], List[str], Dict[str, Any], float]:
-    api_keys = _load_api_keys()
+def _load_configuration(logger: logging.Logger | None = None) -> Tuple[Dict[str, Any], List[str], Dict[str, Any], float]:
+    api_keys = _load_api_keys(logger)
     ai_feeds = _resolve_ai_feeds(api_keys)
     arxiv_params, arxiv_throttle = _resolve_arxiv_config(api_keys)
     return api_keys, ai_feeds, arxiv_params, arxiv_throttle
 
 
+API_KEYS_CACHE: Dict[str, str] = {}
+AI_NEWS_FEEDS: List[str] = list(DEFAULT_AI_FEEDS)
+ARXIV_QUERY_PARAMS: Dict[str, Any] = dict(DEFAULT_ARXIV_PARAMS)
+ARXIV_THROTTLE: float = DEFAULT_ARXIV_THROTTLE
+
+# Preload configuration once at import so module globals reflect runtime hints.
 API_KEYS_CACHE, AI_NEWS_FEEDS, ARXIV_QUERY_PARAMS, ARXIV_THROTTLE = _load_configuration()
 
 
@@ -393,7 +460,7 @@ def _fetch_arxiv_events(params: Dict[str, Any], throttle: float) -> Tuple[List[D
         )
 
     if throttle > 0:
-        time.sleep(throttle)
+        _sleep(throttle)
 
     return events, FetchStatus(name="arxiv", ok=True, message=f"arXiv 返回 {len(events)} 篇文章")
 
@@ -1093,7 +1160,7 @@ def _edgar_request_json(session: requests.Session, url: str) -> Dict[str, Any]:
     for attempt in range(1, 4):
         response = session.get(url, timeout=REQUEST_TIMEOUT)
         if response.status_code == 429 and attempt < 3:
-            time.sleep(delay)
+            _sleep(delay)
             delay *= 2
             continue
         try:
@@ -1104,7 +1171,7 @@ def _edgar_request_json(session: requests.Session, url: str) -> Dict[str, Any]:
             payload = response.json()
         except ValueError as exc:  # JSON decode error
             raise RuntimeError("EDGAR 响应解析失败") from exc
-        time.sleep(EDGAR_THROTTLE)
+        _sleep(EDGAR_THROTTLE)
         return payload
     raise RuntimeError("EDGAR 请求多次重试后仍失败")
 
@@ -1449,7 +1516,7 @@ def _fetch_fmp_fundamentals(
             results[ticker] = metrics
         else:
             errors.append(f"{ticker}: FMP 数据不足")
-        time.sleep(0.2)
+        _sleep(0.2)
     return results, errors
 
 
@@ -1559,7 +1626,7 @@ def _fetch_price_only_quotes(symbols: List[str], api_keys: Optional[Dict[str, An
             "price": snapshot.close,
             "source": snapshot.source,
         }
-        time.sleep(0.2)
+        _sleep(0.2)
     if not results:
         raise RuntimeError("price-only fallback 无法获取任何报价")
     return results
@@ -2120,10 +2187,16 @@ def run(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--force", action="store_true", help="强制刷新当日数据")
     args = parser.parse_args(argv)
 
+    logger = setup_logger("etl")
+    started_at = datetime.now(timezone.utc)
+
     _ensure_out_dir()
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
     trading_day = _current_trading_day()
+    logger = setup_logger("etl", trading_day=trading_day)
+    log(logger, logging.INFO, "etl_start", force=args.force)
+    run_meta.record_step(OUT_DIR, "etl", "started", trading_day=trading_day, force=args.force)
 
     raw_market_path = OUT_DIR / "raw_market.json"
     raw_events_path = OUT_DIR / "raw_events.json"
@@ -2144,12 +2217,13 @@ def run(argv: Optional[List[str]] = None) -> int:
                 if status_payload.get("date") != trading_day:
                     skip_run = False
         if skip_run:
-            print("检测到当日数据，跳过抓取。用 --force 可强制刷新。")
+            log(logger, logging.INFO, "etl_skip_cached")
+            run_meta.record_step(OUT_DIR, "etl", "cached", trading_day=trading_day)
             return 0
 
-    print(f"开始抓取 {trading_day} 的数据……")
+    log(logger, logging.INFO, "etl_execute", trading_day=trading_day)
 
-    api_keys, ai_feeds, arxiv_params, arxiv_throttle = _load_configuration()
+    api_keys, ai_feeds, arxiv_params, arxiv_throttle = _load_configuration(logger)
     global API_KEYS_CACHE, AI_NEWS_FEEDS, ARXIV_QUERY_PARAMS, ARXIV_THROTTLE
     API_KEYS_CACHE = api_keys
     AI_NEWS_FEEDS = ai_feeds
@@ -2157,7 +2231,7 @@ def run(argv: Optional[List[str]] = None) -> int:
     ARXIV_THROTTLE = arxiv_throttle
 
     if not api_keys:
-        print("未提供 API 密钥，将使用示例数据。")
+        log(logger, logging.WARNING, "etl_missing_api_keys")
 
     statuses: List[FetchStatus] = []
     overall_ok = True
@@ -2336,15 +2410,31 @@ def run(argv: Optional[List[str]] = None) -> int:
         json.dump(status_payload, f, ensure_ascii=False, indent=2)
 
     for entry in statuses:
-        prefix = "✅" if entry.ok else "⚠️"
-        print(f"{prefix} {entry.name}: {entry.message}")
+        level = logging.INFO if entry.ok else logging.WARNING
+        log(logger, level, "etl_source_status", source=entry.name, ok=entry.ok, detail=entry.message)
 
     if not status_payload["ok"]:
-        print("部分数据抓取失败，后续流程将触发降级模式。", file=sys.stderr)
+        log(logger, logging.WARNING, "etl_degraded", reason="one or more fetchers failed")
 
     marker.touch(exist_ok=True)
 
-    print("原始数据已输出到 out/ 目录。")
+    duration = (datetime.now(timezone.utc) - started_at).total_seconds()
+    log(
+        logger,
+        logging.INFO,
+        "etl_complete",
+        degraded=not status_payload["ok"],
+        duration_seconds=round(duration, 2),
+        sources=len(statuses),
+    )
+    run_meta.record_step(
+        OUT_DIR,
+        "etl",
+        "completed",
+        trading_day=trading_day,
+        degraded=not status_payload["ok"],
+        duration_seconds=round(duration, 2),
+    )
     return 0
 
 

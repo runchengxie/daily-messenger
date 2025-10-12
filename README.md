@@ -136,7 +136,7 @@ pip install pytest pytest-cov ruff
 推荐使用统一 CLI 一键跑完整流水线：
 
 ```bash
-uv run dm run --force-score
+dm run --force-score
 ```
 
 常见参数：`--date 2024-04-01`（覆盖交易日，供回溯测试）、`--force-fetch` / `--force-score`（跳过幂等标记，强制刷新）、`--degraded`（在渲染阶段标记降级输出）、`--disable-throttle`（禁用抓取端的节流休眠，受控环境使用）。
@@ -144,12 +144,12 @@ uv run dm run --force-score
 保留原始子命令亦可单独执行：
 
 ```bash
-uv run python -m daily_messenger.etl.run_fetch                # 抓取行情、情绪、事件
-uv run python -m daily_messenger.scoring.run_scores --force   # 计算主题得分与建议
-uv run python -m daily_messenger.digest.make_daily            # 渲染网页、摘要、卡片
+dm fetch             # 抓取行情、情绪、事件
+dm score --force     # 计算主题得分与建议
+dm digest            # 渲染网页、摘要、卡片
 ```
 
-上述三条 `python -m ...` 指令分别等价于 `uv run dm fetch`、`uv run dm score --force`、`uv run dm digest`，首选 `dm run` 在一次执行内串联全部阶段。
+上述三条 `python -m ...` 指令分别等价于 `uv run python -m daily_messenger.etl.run_fetch`、`uv run python -m daily_messenger.scoring.run_scores --force`、`uv run python -m daily_messenger.digest.make_daily`，首选 `dm run` 在一次执行内串联全部阶段。
 
 ### 完整 CLI 参考
 

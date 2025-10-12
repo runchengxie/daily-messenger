@@ -5,6 +5,7 @@
 ## 项目概览
 
 * 场景：为内部投研或舆情团队每天生成盘前情报，GitHub Actions 按工作日 UTC 14:00 触发，产物发布到 GitHub Pages，并可同步推送飞书群机器人。
+* 自动化触发：CI 仅在上述定时任务与手动 `workflow_dispatch` 下运行，常规 `git push` 不会触发；定时触发也会检测是否处于 07:00–07:10 PT 播报窗口，超出则直接退出。
 
 * 语言与运行时：Python 3.11；默认使用 [uv](https://github.com/astral-sh/uv) 管理依赖和执行命令。
 
@@ -138,15 +139,7 @@ pip install pytest pytest-cov ruff
 uv run dm run --force-score
 ```
 
-常见参数：
-
-* `--date 2024-04-01`：覆盖交易日，供回溯测试使用。
-
-* `--force-fetch` / `--force-score`：跳过幂等标记，强制刷新。
-
-* `--degraded`：在渲染阶段标记降级输出。
-
-* `--disable-throttle`：禁用抓取端的节流休眠（CI 环境可减少等待）。
+常见参数：`--date 2024-04-01`（覆盖交易日，供回溯测试）、`--force-fetch` / `--force-score`（跳过幂等标记，强制刷新）、`--degraded`（在渲染阶段标记降级输出）、`--disable-throttle`（禁用抓取端的节流休眠，受控环境使用）。
 
 保留原始子命令亦可单独执行：
 
@@ -155,6 +148,21 @@ uv run python -m daily_messenger.etl.run_fetch                # 抓取行情、�
 uv run python -m daily_messenger.scoring.run_scores --force   # 计算主题得分与建议
 uv run python -m daily_messenger.digest.make_daily            # 渲染网页、摘要、卡片
 ```
+
+上述三条 `python -m ...` 指令分别等价于 `uv run dm fetch`、`uv run dm score --force`、`uv run dm digest`，首选 `dm run` 在一次执行内串联全部阶段。
+
+### 完整 CLI 参考
+
+以下列表直接对应 `src/daily_messenger/cli.py` 暴露的旗标，可快速查找每个子命令的可用参数：
+
+```text
+dm run [--date YYYY-MM-DD] [--force-fetch] [--force-score] [--degraded] [--strict] [--disable-throttle]
+dm fetch [--date YYYY-MM-DD] [--force] [--disable-throttle]
+dm score [--date YYYY-MM-DD] [--force] [--strict]
+dm digest [--date YYYY-MM-DD] [--degraded]
+```
+
+> 提示：也可通过设置 `DM_DISABLE_THROTTLE=1` 达成与 `--disable-throttle` 相同的效果。
 
 ## CLI 帮助（自动生成）
 
@@ -402,11 +410,24 @@ uv run ruff check .           # 代码风格检查（可附加 --fix 自动修�
 | **Financial Modeling Prep (FMP)** | Free：**250 次/天**；付费档到 **300–3000 次/分钟** | 另有按带宽计费的限制。([FinancialModelingPrep][3]) |
 | **Trading Economics** | **1 请求/秒**的通用限制；历史数据单次上限 10,000 行 | 日配额未公布。([docs.tradingeconomics.com][4]) |
 | **Finnhub** | 社区经验：约 **60 次/分钟**，并需尊重 `Retry-After` | 请以账户控制台配置为准。([GitHub][5]) |
+| **Coinbase** | Advanced Trade REST：约 **10 次/秒** 基础限速 | 命中 429 后需按 `Retry-After` 回退；公共与私有 key 限速不同。([docs.cloud.coinbase.com](https://docs.cloud.coinbase.com/sign-in-with-coinbase/docs/rate-limits)) |
+| **OKX** | 公共 REST：**20 次/2 秒/端点**；私有 REST：**10 次/2 秒/端点** | 触发限流返回 `code=50011`，需等待窗口刷新。([www.okx.com][6]) |
+| **SoSoValue** | 官方未公布，常见体验为 **几十次/分钟** | ETF 数据按 API Key 计数，超限会短暂冻结。([docs.sosovalue.com][7]) |
+| **Alpaca** | Market Data 免费档：**200 次/分钟，50,000 次/日** | 仅作行情兜底，历史数据会按 symbol/时段额外节流。([alpaca.markets][8]) |
+| **Coinbase/OKX 替补源** | Websocket 订阅通常限 **20 频道/连接** | 遇到断流需指数退避重连。 |
+| **Stooq / Yahoo Finance** | 无官方数字，为共享公共源 | 自觉限速并缓存响应，避免触发封禁。 |
+| **Cboe Put/Call** | 建议 **≤1 次/分钟** 拉取 CSV | 站点过载会直接断开连接，需做指数退避。 |
+| **AAII Sentiment** | 官方每周更新，建议 **≤1 次/日** | 缓存即可满足需求，避免无意义的重复请求。 |
+| **arXiv / AI RSS** | arXiv：官方建议 **≤1 次/3 秒**；RSS：**10–15 分钟/次** | 遵守 `User-Agent`、`If-Modified-Since` 等礼貌抓取规范。([arxiv.org][9]) |
 
 [1]: https://www.alphavantage.co/support/#api-key
 [2]: https://support.twelvedata.com/en/articles/2412741-credits-explained
 [3]: https://financialmodelingprep.com/developer/docs
 [4]: https://docs.tradingeconomics.com/
 [5]: https://github.com/Finnhub-Stock-API/finnhub-python
+[6]: https://www.okx.com/docs-v5/en/#rest-api-rate-limit
+[7]: https://docs.sosovalue.com/reference/api-limit
+[8]: https://docs.alpaca.markets/docs/market-data-api-coverage
+[9]: https://info.arxiv.org/help/api/user-manual.html#submitting-queries
 
 > 配额可能随供应商策略调整而变动；本文档不作为约束逻辑，仅作提示。

@@ -53,21 +53,21 @@ jobs:
         continue-on-error: true
         env:
           API_KEYS: ${{ secrets.API_KEYS }}
-        run: uv run python etl/run_fetch.py
+        run: uv run python -m daily_messenger.etl.run_fetch
 
       - name: Run scoring
         id: scoring
         continue-on-error: true
-        run: uv run python scoring/run_scores.py
+        run: uv run python -m daily_messenger.scoring.run_scores
 
       - name: Render digest
         id: digest
         run: |
           if [ "${{ steps.etl.outcome }}" != "success" ] || [ "${{ steps.scoring.outcome }}" != "success" ]; then
             echo "DEGRADED=1" >> $GITHUB_ENV
-            uv run python digest/make_daily.py --degraded
+            uv run python -m daily_messenger.digest.make_daily --degraded
           else
-            uv run python digest/make_daily.py
+            uv run python -m daily_messenger.digest.make_daily
           fi
 
       - name: Upload Pages artifact
@@ -85,7 +85,7 @@ jobs:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
         run: |
-          uv run python tools/post_feishu.py --webhook "$FEISHU_WEBHOOK" --summary out/digest_summary.txt --card out/digest_card.json
+          uv run python -m daily_messenger.tools.post_feishu --webhook "$FEISHU_WEBHOOK" --summary out/digest_summary.txt --card out/digest_card.json
 
       - name: Mark failure when pipeline degraded
         if: ${{ steps.etl.outcome != 'success' || steps.scoring.outcome != 'success' }}

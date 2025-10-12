@@ -1,12 +1,9 @@
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-
-from tools import post_feishu
+from daily_messenger.tools import post_feishu
 
 
 class DummyResponse:

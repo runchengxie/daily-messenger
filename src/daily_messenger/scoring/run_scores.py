@@ -15,22 +15,26 @@ from typing import Dict, List, Tuple
 
 import yaml
 
-from common import run_meta
-from common.logging import log, setup_logger
+from daily_messenger.common import run_meta
+from daily_messenger.common.logging import log, setup_logger
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
-OUT_DIR = BASE_DIR / "out"
-STATE_DIR = BASE_DIR / "state"
-CONFIG_PATH = BASE_DIR / "config" / "weights.yml"
+SRC_ROOT = Path(__file__).resolve().parents[2]
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+OUT_DIR = PROJECT_ROOT / "out"
+STATE_DIR = PROJECT_ROOT / "state"
+CONFIG_PATH = PROJECT_ROOT / "config" / "weights.yml"
 SENTIMENT_HISTORY_PATH = STATE_DIR / "sentiment_history.json"
 SCORE_HISTORY_PATH = STATE_DIR / "score_history.json"
 
 PUT_CALL_HISTORY_LIMIT = 252
 AAII_HISTORY_LIMIT = 104
 
-from scoring.adaptors import sentiment as sentiment_adaptor
+if __package__:
+    from .adaptors import sentiment as sentiment_adaptor
+else:  # pragma: no cover - runtime convenience for direct script execution
+    from daily_messenger.scoring.adaptors import sentiment as sentiment_adaptor
 
 
 @dataclass

@@ -11,14 +11,15 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping
 
-from common import run_meta
-from common.logging import log, setup_logger
+from daily_messenger.common import run_meta
+from daily_messenger.common.logging import log, setup_logger
 
 from jinja2 import ChoiceLoader, Environment, FileSystemLoader, PackageLoader, select_autoescape
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-OUT_DIR = BASE_DIR / "out"
-TEMPLATE_DIR = BASE_DIR / "digest" / "templates"
+PACKAGE_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+OUT_DIR = PROJECT_ROOT / "out"
+TEMPLATE_DIR = PACKAGE_ROOT / "templates"
 METRIC_LABELS = {
     "fundamental": "基本面",
     "valuation": "估值",
@@ -134,7 +135,7 @@ def _build_env() -> Environment:
     loaders = []
     if TEMPLATE_DIR.exists():
         loaders.append(FileSystemLoader(str(TEMPLATE_DIR)))
-    loaders.append(PackageLoader("digest", "templates"))
+    loaders.append(PackageLoader("daily_messenger.digest", "templates"))
     loader = loaders[0] if len(loaders) == 1 else ChoiceLoader(loaders)
     return Environment(loader=loader, autoescape=select_autoescape(["html", "xml"]))
 

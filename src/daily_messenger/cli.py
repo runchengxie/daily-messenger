@@ -8,10 +8,10 @@ import uuid
 from contextlib import contextmanager
 from typing import List, Optional
 
-from common.logging import log, setup_logger
-from digest import make_daily
-from etl import run_fetch
-from scoring import run_scores
+from daily_messenger.common.logging import log, setup_logger
+from daily_messenger.digest import make_daily
+from daily_messenger.etl import run_fetch
+from daily_messenger.scoring import run_scores
 
 
 @contextmanager

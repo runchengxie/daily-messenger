@@ -14,10 +14,11 @@ def load_run_fetch(monkeypatch):
             monkeypatch.delenv("API_KEYS", raising=False)
         else:
             monkeypatch.setenv("API_KEYS", json.dumps(api_keys))
-        if "etl.run_fetch" in modules_cache:
-            module = importlib.reload(modules_cache["etl.run_fetch"])
+        module_name = "daily_messenger.etl.run_fetch"
+        if module_name in modules_cache:
+            module = importlib.reload(modules_cache[module_name])
         else:
-            module = importlib.import_module("etl.run_fetch")
+            module = importlib.import_module(module_name)
         return module
 
     return _loader

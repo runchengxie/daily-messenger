@@ -1,14 +1,11 @@
 import json
 import math
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-
-from scoring import run_scores as scoring
+from daily_messenger.scoring import run_scores as scoring
 
 
 def test_score_ai_produces_weighted_total():

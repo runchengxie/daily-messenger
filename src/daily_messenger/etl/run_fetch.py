@@ -26,18 +26,18 @@ from xml.etree import ElementTree as ET
 import pytz
 import requests
 
-from common import run_meta
-from common.logging import log, setup_logger
+from daily_messenger.common import run_meta
+from daily_messenger.common.logging import log, setup_logger
 
 if __package__:
     from .fetchers import aaii_sentiment, cboe_putcall
 else:  # pragma: no cover - runtime convenience for direct script execution
-    sys.path.append(str(Path(__file__).resolve().parents[1]))
-    from etl.fetchers import aaii_sentiment, cboe_putcall
+    sys.path.append(str(Path(__file__).resolve().parents[2]))
+    from daily_messenger.etl.fetchers import aaii_sentiment, cboe_putcall
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-OUT_DIR = BASE_DIR / "out"
-STATE_DIR = BASE_DIR / "state"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+OUT_DIR = PROJECT_ROOT / "out"
+STATE_DIR = PROJECT_ROOT / "state"
 
 ALPHA_VANTAGE_SYMBOLS = {
     "SPX": "SPY",  # S&P 500 ETF proxy

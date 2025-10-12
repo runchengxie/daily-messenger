@@ -1,7 +1,7 @@
 import pytest
 
-from etl.fetchers import aaii_sentiment, cboe_putcall
-from scoring.adaptors import sentiment as sentiment_adaptor
+from daily_messenger.etl.fetchers import aaii_sentiment, cboe_putcall
+from daily_messenger.scoring.adaptors import sentiment as sentiment_adaptor
 
 
 class _DummyResponse:

@@ -20,21 +20,21 @@ flowchart TD
     B -- 否 --> X[退出作业<br/>非播报窗口]
     B -- 是 --> C[Checkout 代码<br/>Setup Python / 安装 uv]
     C --> D[uv sync --locked --no-dev<br/>同步依赖]
-    D --> E[运行 ETL<br/>etl/run_fetch.py]
+    D --> E[运行 ETL<br/>src/daily_messenger/etl/run_fetch.py]
     E -->|输出| Eo[out/raw_market.json<br/>out/raw_events.json<br/>out/etl_status.json]
     E --> F{ETL 成功?}
     F -- 否 --> G[标记降级 DEGRADED=1]
-    F -- 是 --> H[运行评分<br/>scoring/run_scores.py]
+    F -- 是 --> H[运行评分<br/>src/daily_messenger/scoring/run_scores.py]
     H -->|输出| Ho[out/scores.json<br/>out/actions.json<br/>state/sentiment_history.json]
     H --> I{评分成功?}
     I -- 否 --> G
-    I -- 是 --> J[渲染日报<br/>digest/make_daily.py]
-    G --> Jd[降级渲染<br/>make_daily.py --degraded]
+    I -- 是 --> J[渲染日报<br/>src/daily_messenger/digest/make_daily.py]
+    G --> Jd[降级渲染<br/>python -m daily_messenger.digest.make_daily --degraded]
     J & Jd -->|输出| Ko[out/index.html<br/>out/YYYY-MM-DD.html<br/>out/digest_summary.txt<br/>out/digest_card.json]
     Ko --> L[上传 Pages 产物]
     L --> M[部署到 GitHub Pages]
     Ko --> N{存在 FEISHU_WEBHOOK?}
-    N -- 是 --> O[推送飞书卡片<br/>tools/post_feishu.py]
+    N -- 是 --> O[推送飞书卡片<br/>src/daily_messenger/tools/post_feishu.py]
     N -- 否 --> P[跳过飞书推送<br/>不中断流水线]
     Jd --> Q[CI 标记失败<br/>exit 1]
     M --> R[完成]
@@ -44,10 +44,10 @@ flowchart TD
 
 | 阶段 | 入口脚本 | 关键输入 | 主要输出 | 降级策略 |
 | ---- | -------- | -------- | -------- | -------- |
-| 数据抓取 | `etl/run_fetch.py` | API 凭证、配置文件 | `raw_market.json`、`raw_events.json`、`etl_status.json` | 缺失数据时回退模拟函数并记录 `FetchStatus` |
-| 情绪与主题评分 | `scoring/run_scores.py` | `out/raw_*.json`、`state/` 历史 | `scores.json`、`actions.json`、`state/sentiment_history.json` | 可通过 `--force` 忽略缓存，缺口数据视为降级 |
-| 报告渲染 | `digest/make_daily.py` | `scores.json`、`actions.json` | `index.html`、`YYYY-MM-DD.html`、`digest_summary.txt`、`digest_card.json` | `--degraded` 或 `scores.json` 标记触发醒目提示 |
-| 飞书通知 | `tools/post_feishu.py` | 卡片 JSON、摘要文本 | 飞书机器人消息 | 缺少 Webhook 时跳过但不中断流水线 |
+| 数据抓取 | `src/daily_messenger/etl/run_fetch.py` | API 凭证、配置文件 | `raw_market.json`、`raw_events.json`、`etl_status.json` | 缺失数据时回退模拟函数并记录 `FetchStatus` |
+| 情绪与主题评分 | `src/daily_messenger/scoring/run_scores.py` | `out/raw_*.json`、`state/` 历史 | `scores.json`、`actions.json`、`state/sentiment_history.json` | 可通过 `--force` 忽略缓存，缺口数据视为降级 |
+| 报告渲染 | `src/daily_messenger/digest/make_daily.py` | `scores.json`、`actions.json` | `index.html`、`YYYY-MM-DD.html`、`digest_summary.txt`、`digest_card.json` | `--degraded` 或 `scores.json` 标记触发醒目提示 |
+| 飞书通知 | `src/daily_messenger/tools/post_feishu.py` | 卡片 JSON、摘要文本 | 飞书机器人消息 | 缺少 Webhook 时跳过但不中断流水线 |
 
 更多业务背景与数据源说明见 [docs/data_source.md](docs/data_source.md)。
 
@@ -57,16 +57,21 @@ flowchart TD
 
 ```text
 repo/
-  etl/                 # 数据抓取器与降级模拟
-  scoring/             # 主题评分、权重与阈值
-  digest/              # Jinja2 模板、网页/卡片生成
-  tools/               # 飞书推送、打包工具
-  config/              # weights.yml 等配置清单
-  project_tools/       # CI/审计辅助脚本
-  tests/               # Pytest 与测试夹具
-  .github/workflows/   # 自动化流水线（GitHub Actions）
-  out/                 # 运行时输出（默认忽略入库）
-  state/               # 幂等标记与情绪历史（默认忽略入库）
+  src/
+    daily_messenger/
+      cli.py            # CLI 入口
+      common/           # 日志、运行元数据等共享组件
+      digest/           # 模板与日报渲染逻辑
+      etl/              # 数据抓取器与降级模拟
+      scoring/          # 主题评分、权重与阈值
+      tools/            # 飞书推送等辅助脚本
+  config/               # weights.yml 等配置清单
+  docs/                 # 业务与数据源文档
+  project_tools/        # CI/审计辅助脚本
+  tests/                # Pytest 与测试夹具
+  .github/workflows/    # 自动化流水线（GitHub Actions）
+  out/                  # 运行时输出（默认忽略入库）
+  state/                # 幂等标记与情绪历史（默认忽略入库）
 ```
 
 `out/` 与 `state/` 会在首次运行时创建；生产环境建议映射到持久化磁盘以保留历史记录。
@@ -89,7 +94,7 @@ repo/
 
 3. 调整权重与阈值：修改 `config/weights.yml` 并同步更新测试断言（见 `tests/`）。
 
-缺失凭证或接口异常时，`etl/run_fetch.py` 会写入 `out/etl_status.json`，同时触发模拟数据或历史回退，流水线仍可完成但会被标记为降级模式。
+缺失凭证或接口异常时，`src/daily_messenger/etl/run_fetch.py` 会写入 `out/etl_status.json`，同时触发模拟数据或历史回退，流水线仍可完成但会被标记为降级模式。
 
 ## 环境准备
 
@@ -128,9 +133,9 @@ uv run dm run --force-score
 保留原始子命令亦可单独执行：
 
 ```bash
-uv run python etl/run_fetch.py                # 抓取行情、情绪、事件
-uv run python scoring/run_scores.py --force   # 计算主题得分与建议
-uv run python digest/make_daily.py            # 渲染网页、摘要、卡片
+uv run python -m daily_messenger.etl.run_fetch                # 抓取行情、情绪、事件
+uv run python -m daily_messenger.scoring.run_scores --force   # 计算主题得分与建议
+uv run python -m daily_messenger.digest.make_daily            # 渲染网页、摘要、卡片
 ```
 
 执行完成后，`out/` 目录包含：
@@ -163,13 +168,13 @@ uv run python digest/make_daily.py            # 渲染网页、摘要、卡片
 
 ```bash
 export FEISHU_WEBHOOK=https://open.feishu.cn/xxx
-uv run python tools/post_feishu.py \
+uv run python -m daily_messenger.tools.post_feishu \
   --webhook "$FEISHU_WEBHOOK" \
   --summary out/digest_summary.txt \
   --card out/digest_card.json
 ```
 
-* 也可以直接运行`uv run python tools/post_feishu.py`，若 `out/digest_card.json` 存在则发送互动卡片，否则发送文本摘要（默认读取 `out/digest_summary.txt`）。
+* 也可以直接运行 `uv run python -m daily_messenger.tools.post_feishu`，若 `out/digest_card.json` 存在则发送互动卡片，否则发送文本摘要（默认读取 `out/digest_summary.txt`）。
 
 可选设置 `FEISHU_SECRET` 以启用签名校验；缺少 Webhook 时脚本会安全退出并提示。
 

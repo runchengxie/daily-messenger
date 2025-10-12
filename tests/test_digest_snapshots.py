@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from digest import make_daily as digest
+from daily_messenger.digest import make_daily as digest
 
 
 class _FixedDatetime(datetime):
@@ -25,7 +25,11 @@ def reset_snapshot_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_digest_outputs_match_snapshots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     snapshot_dir = Path(__file__).resolve().parent / "__snapshots__"
     monkeypatch.setattr(digest, "OUT_DIR", tmp_path)
-    monkeypatch.setattr(digest, "TEMPLATE_DIR", Path(__file__).resolve().parents[1] / "digest" / "templates")
+    monkeypatch.setattr(
+        digest,
+        "TEMPLATE_DIR",
+        Path(__file__).resolve().parents[1] / "src" / "daily_messenger" / "digest" / "templates",
+    )
     monkeypatch.setattr(digest, "datetime", _FixedDatetime)
     monkeypatch.setenv("GITHUB_REPOSITORY", "acme/daily-messenger")
 

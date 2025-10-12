@@ -15,7 +15,7 @@ from typing import Any, Dict
 
 import requests
 
-from common.logging import log, setup_logger
+from daily_messenger.common.logging import log, setup_logger
 
 
 def _read_file(path: str | None) -> str:
@@ -64,7 +64,7 @@ def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Push message to Feishu webhook")
     from pathlib import Path as _P
 
-    base_dir = _P(__file__).resolve().parents[1]
+    base_dir = _P(__file__).resolve().parents[3]
     out_dir = base_dir / "out"
     parser.add_argument(
         "--webhook",

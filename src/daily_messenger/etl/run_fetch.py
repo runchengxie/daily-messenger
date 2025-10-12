@@ -180,7 +180,7 @@ def _load_api_keys(logger: logging.Logger | None) -> Dict[str, str]:
         expanded = Path(path_hint).expanduser()
         candidate_paths.append(expanded)
         if not expanded.is_absolute():
-            candidate_paths.append((BASE_DIR / expanded).resolve())
+            candidate_paths.append((PROJECT_ROOT / expanded).resolve())
         for candidate in candidate_paths:
             try:
                 with open(candidate, "r", encoding="utf-8") as fh:

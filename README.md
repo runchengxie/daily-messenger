@@ -181,10 +181,15 @@ options:
 执行完成后，`out/` 目录包含：
 
 * `raw_market.json`、`raw_events.json`、`etl_status.json`（抓取详情与状态）
+
 * `scores.json`、`actions.json`（主题总分、指标拆解与建议）
+
 * `index.html`、`YYYY-MM-DD.html`（静态日报页面）
+
 * `digest_summary.txt`（文本摘要，多用于飞书或邮件）
+
 * `digest_card.json`（飞书互动卡片结构体）
+
 * `run_meta.json`（本次流水线的机器可读运行元数据）
 
 ## 产物契约

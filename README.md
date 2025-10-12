@@ -1,12 +1,15 @@
 # 每日简报 Daily Messenger
 
-一个端到端的自动化市场情报流水线：抓取行情与事件 → 计算主题得分 → 渲染网页/摘要 → 分发飞书卡片。本 README 作为项目的权威操作手册，除非特别标注“参考”，其描述优先于其他文件。
+一个端到端的自动化市场情报流水线：抓取行情与事件 → 计算主题得分 → 渲染网页/摘要 → 分发飞书卡片。
 
 ## 项目概览
 
 * 场景：为内部投研或舆情团队每天生成盘前情报，GitHub Actions 按工作日 UTC 14:00 触发，产物发布到 GitHub Pages，并可同步推送飞书群机器人。
+
 * 语言与运行时：Python 3.11；默认使用 [uv](https://github.com/astral-sh/uv) 管理依赖和执行命令。
+
 * 输入：多家行情/宏观/情绪数据提供商的 HTTP API、RSS 与 Atom Feed；凭证通过 `API_KEYS` 注入。
+
 * 输出：`out/` 目录下的结构化 JSON、HTML 报告、摘要文本与飞书互动卡片。
 
 ## 项目运行流程图
@@ -56,7 +59,7 @@ flowchart TD
 | 情绪指标 | Cboe Put/Call CSV、AAII Sentiment | 使用上一期缓存写入 `state/sentiment_history.json` | `out/raw_market.json.sentiment`、`state/sentiment_history.json` |
 | 宏观与事件 | Trading Economics 日历、Finnhub 财报、AI 新闻 RSS、arXiv API | 人工模拟事件 `_simulate_events()`；缺口写入降级状态 | `out/raw_events.json.events`、`out/etl_status.json.sources` |
 
-> 所有数据抓取均记录到 `out/etl_status.json`，该文件是排障与降级判定的最终依据。
+> 所有数据抓取均记录到 `out/etl_status.json`，有利于排障与降级判定。
 
 ## 仓库与持久化布局
 
@@ -84,17 +87,19 @@ repo/
 
 1. 复制模板并填写真实凭证：
 
-   ```bash
-   cp api_keys.json.example api_keys.json
-   ```
+    ```bash
+    cp api_keys.json.example api_keys.json
+    ```
 
 2. 以任意方式注入凭证（脚本按优先级查找）：
 
-   * `API_KEYS_PATH=/path/to/api_keys.json`
-   * `API_KEYS='{"alpha_vantage":"...","finnhub":"..."}'`
-   * 环境变量形式：`ALPHA_VANTAGE=...`、`TRADING_ECONOMICS_USER=...` 等
+    * `API_KEYS_PATH=/path/to/api_keys.json`
 
-   支持键：`alpha_vantage`、`twelve_data`、`financial_modeling_prep`、`trading_economics`、`finnhub`、`ai_feeds`、`arxiv`、`coinbase`、`okx`、`sosovalue`、`alpaca_key_id`、`alpaca_secret`。
+    * `API_KEYS='{"alpha_vantage":"...","finnhub":"..."}'`
+
+    * 环境变量形式：`ALPHA_VANTAGE=...`、`TRADING_ECONOMICS_USER=...` 等
+
+    支持键：`alpha_vantage`、`twelve_data`、`financial_modeling_prep`、`trading_economics`、`finnhub`、`ai_feeds`、`arxiv`、`coinbase`、`okx`、`sosovalue`、`alpaca_key_id`、`alpaca_secret`。
 
 3. 调整权重与阈值：修改 `config/weights.yml` 并同步更新测试断言（见 `tests/`）。
 
@@ -103,8 +108,8 @@ repo/
 ## 权重配置与变更流程
 
 * `config/weights.yml` 通过 `version` 与 `changed_at` 字段声明当前权重版本；所有权重调整都需同步更新测试预期（尤其是 `tests/test_scoring.py` 和 `tests/test_digest_snapshots.py`）。
-* 修改阈值会直接影响 `actions.json` 与飞书卡片输出，提交 PR 时请附上新的 `out/scores.json` 与 `out/actions.json` 示例。
-* 当版本号递增时，请在 README 的“产物契约”示例或说明中反映关键字段的变化，确保争议时以此为准。
+
+* 修改阈值会直接影响 `actions.json` 与飞书卡片输出
 
 ## 环境准备
 
@@ -136,8 +141,11 @@ uv run dm run --force-score
 常见参数：
 
 * `--date 2024-04-01`：覆盖交易日，供回溯测试使用。
+
 * `--force-fetch` / `--force-score`：跳过幂等标记，强制刷新。
+
 * `--degraded`：在渲染阶段标记降级输出。
+
 * `--disable-throttle`：禁用抓取端的节流休眠（CI 环境可减少等待）。
 
 保留原始子命令亦可单独执行：
@@ -248,6 +256,7 @@ options:
 ```
 
 * `themes` 数组中的每个对象必须保留 `name`、`label`、`total`、`breakdown` 与 `weights` 字段。
+
 * `sentiment` 结构来源于情绪聚合器，若缺失则整个字段应省略。
 
 ### `out/actions.json`
@@ -334,7 +343,9 @@ uv run python -m daily_messenger.tools.post_feishu \
 ## 日志与观测
 
 * 全部入口脚本使用结构化 JSON 日志输出(`stdout`)，字段包含 `run_id`、`component`、`trading_day` 等，方便在 CI/日志平台聚合检索。可自定义 `DM_RUN_ID=<uuid>` 以串联多步流水数据。
+
 * `out/run_meta.json` 记录每个阶段的状态、耗时与降级标记，适合接入额外的监控或趋势分析。
+
 * 抓取阶段的节流可通过 `DM_DISABLE_THROTTLE=1` 显式关闭（默认遵循配置或内置延迟，建议仅在受控环境使用）。
 
 ## 测试与质量保障
@@ -348,9 +359,13 @@ uv run ruff check .           # 代码风格检查（可附加 --fix 自动修�
 测试重点包括：
 
 * ETL 对 RSS/Atom 解析与降级分支的回退行为（`tests/test_etl_ai_feeds.py`）。
+
 * Put/Call、AAII 等情绪抓取器的容错能力（`tests/test_sentiment_fetchers.py`）。
+
 * 主题得分与建议生成逻辑（`tests/test_scoring.py`）。
+
 * 报告渲染、摘要裁剪与卡片生成的端到端校验（`tests/test_digest.py`、`tests/test_digest_snapshots.py`）。
+
 * 飞书推送的 webhook 签名与容错路径（`tests/test_post_feishu.py`）。
 
 任何修改 `config/weights.yml` 或模板的变更都应同步更新上述测试与 README 的契约示例。
@@ -358,11 +373,17 @@ uv run ruff check .           # 代码风格检查（可附加 --fix 自动修�
 ## 自动化运维
 
 * CI 入口：`.github/workflows/daily.yml`。
+
   * 工作日 UTC 14:00 触发，若当前时间不在 07:00–07:10 PT 窗口内即提前结束（以 README 约定为准）。
+
   * 所有步骤使用 `uv sync --locked --no-dev` 与 `uv run`，保证与本地一致的 Python 3.11 环境。
+
   * ETL 与评分允许 `continue-on-error`，任一失败都会设置 `DEGRADED=1` 并在渲染阶段显式降级。
+
   * 即使降级输出仍会上传 `out/` 到 GitHub Pages，并在最后一步根据 ETL/评分状态决定是否 `exit 1`。
+
   * 如配置了 `FEISHU_WEBHOOK`，会在部署后推送最新卡片；缺失凭证则跳过且不中断流程。
+
 * 支持 `workflow_dispatch` 手动触发；调试时可检查 `run_meta.json` 与结构化日志定位问题。
 
 ## 数据服务限额（参考）

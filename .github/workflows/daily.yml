@@ -20,6 +20,9 @@ env:
 jobs:
   run:
     runs-on: ubuntu-latest
+    env:
+      FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+      FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -134,12 +137,14 @@ jobs:
         uses: actions/deploy-pages@v4
 
       - name: Push Feishu card
-        if: ${{ always() && secrets.FEISHU_WEBHOOK != '' }}
-        env:
-          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
-          FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+        if: ${{ always() && env.FEISHU_WEBHOOK != '' }}
         run: |
-          uv run python -m daily_messenger.tools.post_feishu --webhook "$FEISHU_WEBHOOK" --summary out/digest_summary.txt --card out/digest_card.json
+          uv run python -m daily_messenger.tools.post_feishu \
+            --webhook "$FEISHU_WEBHOOK" \
+            --secret "$FEISHU_SECRET" \
+            --ok "OK" \
+            --summary out/digest_summary.txt \
+            --card out/digest_card.json
 
       - name: Mark failure when pipeline degraded
         if: ${{ steps.etl.outcome != 'success' || steps.scoring.outcome != 'success' }}

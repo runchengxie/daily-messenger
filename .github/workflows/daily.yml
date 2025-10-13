@@ -29,6 +29,58 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Setup Node for Playwright
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Playwright
+        run: |
+          npm install -g playwright
+          npx playwright install chromium --with-deps
+
+      - name: Get Farside session
+        id: farside
+        run: |
+          NODE_PATH=$(npm root -g) node - <<'EOF'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+          (async () => {
+            const fallbackUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+            const ua = (process.env.FARSIDE_UA && process.env.FARSIDE_UA.trim()) ? process.env.FARSIDE_UA.trim() : fallbackUA;
+            const browser = await chromium.launch();
+            const context = await browser.newContext({ userAgent: ua, locale: "en-US" });
+            const page = await context.newPage();
+            await page.goto("https://farside.co.uk/bitcoin-etf-flow-all-data/", { waitUntil: "domcontentloaded" });
+            for (const sel of ["text=Accept", "text=I agree", "text=Continue", "text=OK"]) {
+              try {
+                await page.click(sel, { timeout: 1500 });
+              } catch (error) {
+                if (error && error.name !== 'TimeoutError') {
+                  throw error;
+                }
+              }
+            }
+            await page.waitForTimeout(2500);
+            const cookies = (await context.cookies()).filter((cookie) => /farside\.co\.uk$/.test(cookie.domain));
+            const cookieHeader = cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; ");
+            const outputPath = process.env.GITHUB_OUTPUT;
+            if (outputPath) {
+              fs.appendFileSync(outputPath, `cookies=${cookieHeader}\n`);
+              fs.appendFileSync(outputPath, `ua=${ua}\n`);
+            }
+            await browser.close();
+          })().catch((error) => {
+            console.error(error);
+            process.exit(2);
+          });
+          EOF
+
+      - name: Export Farside session
+        run: |
+          echo "FARSIDE_COOKIES=${{ steps.farside.outputs.cookies }}" >> $GITHUB_ENV
+          echo "FARSIDE_UA=${{ steps.farside.outputs.ua }}" >> $GITHUB_ENV
+
       - name: Install uv
         uses: astral-sh/setup-uv@v3
 
@@ -53,6 +105,8 @@ jobs:
         continue-on-error: true
         env:
           API_KEYS: ${{ secrets.API_KEYS }}
+          FARSIDE_COOKIES: ${{ env.FARSIDE_COOKIES }}
+          FARSIDE_UA: ${{ env.FARSIDE_UA }}
         run: uv run python -m daily_messenger.etl.run_fetch
 
       - name: Run scoring

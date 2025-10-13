@@ -2,6 +2,22 @@
 
 一个端到端的自动化市场情报流水线：抓取行情与事件 → 计算主题得分 → 渲染网页/摘要 → 分发飞书卡片。
 
+## Quickstart
+
+```bash
+# 1) 安装 uv（一次性）
+# 详见 https://github.com/astral-sh/uv
+
+# 2) 拉取与 CI 一致的运行时依赖
+uv sync --locked --no-dev
+
+# 3) 最小化运行（无密钥会触发降级但仍能产出）
+API_KEYS='{}' dm run --force-score
+# 常用参数：--date YYYY-MM-DD, --force-fetch, --force-score, --degraded
+```
+
+> ⚠️ **定时执行窗口**：GitHub Actions 仅在工作日 UTC 14:00 触发，且会校验当前是否处于 **07:00–07:10 PT** 播报窗口。超出窗口 CI 会立即退出，不会重新排程。
+
 ## 项目概览
 
 * 场景：为内部投研或舆情团队每天生成盘前情报，GitHub Actions 按工作日 UTC 14:00 触发，产物发布到 GitHub Pages，并可同步推送飞书群机器人。
@@ -114,6 +130,8 @@ repo/
 
 ## 环境准备
 
+> 💡 **浏览器依赖说明**：本地最小可用环境仅需 Python + uv。若要完整复现 ETF 资金流抓取的浏览器链路（与 CI 一致），请额外安装 Node.js 20 与 [Playwright](https://playwright.dev/python/docs/intro)。CI 在 `.github/workflows/daily.yml` 中通过 `setup-node` 与 `npx playwright install --with-deps` 预装这些组件，本地如需调试可按同样步骤执行。
+
 ### 使用 uv（推荐）
 
 ```bash
@@ -203,6 +221,8 @@ options:
 ## 产物契约
 
 以下示例定义了关键文件的最小字段集。任何破坏这些契约的改动都必须在本节同步更新。
+
+> 🚨 **变更提示**：凡涉及契约字段、`config/weights.yml` 或模板的改动，必须在同一 PR 内更新示例、相应快照，以及 `pytest -k contract` 用例，否则 CI 会拒绝合并。
 
 ### `out/etl_status.json`
 
@@ -361,12 +381,19 @@ uv run python -m daily_messenger.tools.post_feishu \
 
 * 抓取阶段的节流可通过 `DM_DISABLE_THROTTLE=1` 显式关闭（默认遵循配置或内置延迟，建议仅在受控环境使用）。
 
+## 故障排查指南
+
+* **缺少 `API_KEYS`**：流水线会自动进入降级模式，模拟数据会在网页与摘要顶部加粗提示，同时 `out/etl_status.json.ok=false` 与 `run_meta.json` 中的 `degraded=true`。如需验证真实接口，可在本地导入最小化凭证并重新执行。
+* **未配置 `FEISHU_WEBHOOK`**：推送脚本会安全跳过，`daily_messenger.tools.post_feishu` 返回码为 0，并在日志中写出 `feishu_skip_no_webhook` 事件，不会阻断 CI。
+* **如何定位缺失字段**：结构化日志输出在 `out/run_meta.json` 中可按步骤查状态；产物契约失配时，请对照下文“产物契约”示例，同时运行 `pytest -k contract` 触发合同测试以获得具体断言。
+
 ## 测试与质量保障
 
 ```bash
-uv run pytest                 # 单元与集成测试
-uv run pytest --cov=digest    # 按需收集覆盖率
-uv run ruff check .           # 代码风格检查（可附加 --fix 自动修复）
+uv run pytest                                    # 单元与集成测试
+uv run pytest -k cli_pipeline --maxfail=1        # CLI 冒烟与合同测试
+uv run pytest --cov=daily_messenger --cov-report=term-missing --cov-fail-under=70
+uv run ruff check .                              # 代码风格检查（可附加 --fix 自动修复）
 ```
 
 测试重点包括：
@@ -399,9 +426,9 @@ uv run ruff check .           # 代码风格检查（可附加 --fix 自动修�
 
 * 支持 `workflow_dispatch` 手动触发；调试时可检查 `run_meta.json` 与结构化日志定位问题。
 
-## 数据服务限额（参考）
+## 数据服务限额（仅供参考，逻辑不依赖）
 
-下表仅供提醒，具体以各供应商官网为准：
+下表仅供提醒，具体以各供应商官网为准；流水线逻辑不会基于下列配额做强依赖判断：
 
 | 提供商 | 常见免费/入门限频 | 备注 |
 | ------ | ---------------- | ---- |

@@ -142,7 +142,6 @@ jobs:
           uv run python -m daily_messenger.tools.post_feishu \
             --webhook "$FEISHU_WEBHOOK" \
             --secret "$FEISHU_SECRET" \
-            --ok "OK" \
             --summary out/digest_summary.txt \
             --card out/digest_card.json
 

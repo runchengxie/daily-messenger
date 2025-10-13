@@ -23,10 +23,9 @@ def test_score_ai_produces_weighted_total():
     assert 0.0 <= result.total <= 100.0
 
     degraded_result = scoring._score_ai(market, weights, degraded=True)
-    expected_total = 50 * sum(weights.values())
 
     assert degraded_result.degraded
-    assert math.isclose(degraded_result.total, expected_total, rel_tol=1e-9)
+    assert math.isclose(degraded_result.total, result.total, rel_tol=1e-9)
 
 
 def test_score_magnificent7_uses_theme_metrics():
@@ -215,9 +214,9 @@ def test_run_with_strict_mode_aborts_on_degraded(tmp_path: Path, monkeypatch: py
     )
     config_path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
 
-    _write_json(out_dir / "raw_market.json", _sample_raw_market())
+    _write_json(out_dir / "raw_market.json", {})
     _write_json(out_dir / "raw_events.json", {"events": []})
-    _write_json(out_dir / "etl_status.json", {"ok": False, "sources": []})
+    _write_json(out_dir / "etl_status.json", {"ok": True, "sources": []})
 
     monkeypatch.setenv("STRICT", "1")
 
@@ -229,6 +228,50 @@ def test_run_with_strict_mode_aborts_on_degraded(tmp_path: Path, monkeypatch: py
 
     meta = json.loads((out_dir / "run_meta.json").read_text(encoding="utf-8"))
     assert meta["steps"]["scoring"]["status"] == "failed"
+
+
+def test_run_keeps_themes_active_when_only_etf_flow_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trading_day = "2024-04-08"
+    out_dir, state_dir, config_path = _setup_scoring_environment(tmp_path, monkeypatch, trading_day)
+
+    config = _sample_config(
+        weights={
+            "fundamental": 0.2,
+            "valuation": 0.3,
+            "sentiment": 0.2,
+            "liquidity": 0.2,
+            "event": 0.1,
+        },
+        thresholds={"action_add": 75, "action_trim": 40},
+    )
+    config_path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
+
+    _write_json(out_dir / "raw_market.json", _sample_raw_market())
+    _write_json(out_dir / "raw_events.json", {"events": []})
+    _write_json(
+        out_dir / "etl_status.json",
+        {
+            "ok": False,
+            "sources": [
+                {"name": "btc_etf_flow", "ok": False},
+                {"name": "coinbase_spot", "ok": True},
+                {"name": "okx_funding", "ok": True},
+                {"name": "okx_basis", "ok": True},
+            ],
+        },
+    )
+
+    exit_code = scoring.run(["--force"])
+
+    assert exit_code == 0
+    scores_payload = json.loads((out_dir / "scores.json").read_text(encoding="utf-8"))
+    assert not scores_payload["degraded"]
+    theme_map = {theme["name"]: theme for theme in scores_payload["themes"]}
+    assert not theme_map["ai"]["degraded"]
+    assert not theme_map["magnificent7"]["degraded"]
+    assert not theme_map["btc"]["degraded"]
 
 
 def test_config_update_adjusts_scores_and_actions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

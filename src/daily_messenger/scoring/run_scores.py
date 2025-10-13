@@ -218,13 +218,6 @@ def _score_ai(
     )
     breakdown_detail["event"] = _make_detail(breakdown["event"], fallback=False, source="配置")
 
-    if degraded:
-        breakdown = {k: 50.0 for k in breakdown}
-        breakdown_detail = {
-            k: _make_detail(50.0, fallback=True, reason="数据降级")
-            for k in breakdown
-        }
-
     total = sum(weights.get(k, 0.0) * breakdown[k] for k in breakdown)
     return ThemeScore(
         name="ai",
@@ -291,13 +284,6 @@ def _score_btc(
         ),
         "event": _make_detail(65.0, fallback=False, source="配置"),
     }
-    if degraded:
-        breakdown = {k: 50.0 for k in breakdown}
-        breakdown_detail = {
-            k: _make_detail(50.0, fallback=True, reason="数据降级")
-            for k in breakdown
-        }
-
     total = sum(weights.get(k, 0.0) * breakdown[k] for k in breakdown)
     return ThemeScore(
         name="btc",
@@ -360,13 +346,6 @@ def _score_magnificent7(
         reason="情绪数据缺口，使用中性值" if sentiment_fallback else None,
     )
     breakdown_detail["event"] = _make_detail(breakdown["event"], fallback=False, source="配置")
-    if degraded:
-        breakdown = {k: 50.0 for k in breakdown}
-        breakdown_detail = {
-            k: _make_detail(50.0, fallback=True, reason="数据降级")
-            for k in breakdown
-        }
-
     total = sum(weights.get(k, 0.0) * breakdown[k] for k in breakdown)
     return ThemeScore(
         name="magnificent7",
@@ -441,27 +420,44 @@ def run(argv: List[str] | None = None) -> int:
     raw_market = _load_json(OUT_DIR / "raw_market.json")
     raw_events = _load_json(OUT_DIR / "raw_events.json")
     etl_status = _load_json(OUT_DIR / "etl_status.json")
+    if not isinstance(etl_status, dict):
+        etl_status = {}
 
-    degraded = not etl_status.get("ok", False)
-    if not raw_market:
-        degraded = True
+    sources_raw = etl_status.get("sources", [])
+    source_status: Dict[str, bool] = {}
+    if isinstance(sources_raw, list):
+        for entry in sources_raw:
+            if isinstance(entry, dict):
+                name = entry.get("name")
+                if isinstance(name, str):
+                    source_status[name] = bool(entry.get("ok"))
+            elif isinstance(entry, str):
+                source_status[entry] = True
+
+    raw_market_payload = raw_market if isinstance(raw_market, dict) else {}
+    market_payload = raw_market_payload.get("market", {})
+    if not isinstance(market_payload, dict):
+        market_payload = {}
+    btc_payload = raw_market_payload.get("btc", {})
+    if not isinstance(btc_payload, dict):
+        btc_payload = {}
+    sentiment_node = raw_market_payload.get("sentiment", {})
+    if not isinstance(sentiment_node, dict):
+        sentiment_node = {}
+
+    market_missing = not market_payload
+    if market_missing:
         log(logger, logging.WARNING, "scoring_missing_market_data")
     if not raw_events:
         log(logger, logging.WARNING, "scoring_missing_events")
 
-    if degraded and os.getenv("STRICT"):
-        log(logger, logging.ERROR, "scoring_strict_abort", strict=True)
-        run_meta.record_step(
-            OUT_DIR,
-            "scoring",
-            "failed",
-            trading_day=trading_day,
-            degraded=True,
-            strict=True,
-        )
-        return 2
+    btc_signals = ("coinbase_spot", "okx_funding", "okx_basis")
+    btc_signal_ok = all(source_status.get(name, True) for name in btc_signals)
+    btc_missing = not btc_payload
 
-    sentiment_node = raw_market.get("sentiment", {}) if isinstance(raw_market, dict) else {}
+    theme_ai_degraded = market_missing
+    theme_m7_degraded = market_missing
+    theme_btc_degraded = btc_missing or not btc_signal_ok
 
     existing_history = _load_json(SENTIMENT_HISTORY_PATH)
     if not isinstance(existing_history, dict):
@@ -488,15 +484,10 @@ def run(argv: List[str] | None = None) -> int:
             spread_value = _coerce_float(aaii.get("bull_bear_spread"))
             _append_history(history, "aaii_bull_bear_spread", spread_value, AAII_HISTORY_LIMIT)
 
-    sentiment_result = None
-    if isinstance(sentiment_node, dict):
-        sentiment_result = sentiment_adaptor.aggregate(sentiment_node, history)
+    sentiment_result = sentiment_adaptor.aggregate(sentiment_node, history) if sentiment_node else None
 
     sentiment_available = sentiment_result is not None
     sentiment_score_value = sentiment_result.score if sentiment_result else 50.0
-
-    market_payload = raw_market.get("market", {})
-    btc_payload = raw_market.get("btc", {})
 
     theme_ai_weights = weights.get("theme_ai") or weights.get("default", {})
     theme_btc_weights = weights.get("theme_btc") or weights.get("default", {})
@@ -505,7 +496,7 @@ def run(argv: List[str] | None = None) -> int:
     theme_ai = _score_ai(
         market_payload,
         theme_ai_weights,
-        degraded,
+        theme_ai_degraded,
         sentiment_score=sentiment_score_value,
         sentiment_fallback=not sentiment_available,
     )
@@ -514,12 +505,10 @@ def run(argv: List[str] | None = None) -> int:
     btc_sentiment_fallback = funding_rate_raw is None
     funding_rate_for_score = funding_rate_raw if funding_rate_raw is not None else 0.0
     btc_sentiment_value = _scale(funding_rate_for_score, midpoint=0.005, sensitivity=600)
-    if degraded:
-        btc_sentiment_fallback = True
     theme_btc = _score_btc(
         btc_payload,
         theme_btc_weights,
-        degraded,
+        theme_btc_degraded,
         sentiment_score=btc_sentiment_value,
         sentiment_fallback=btc_sentiment_fallback,
     )
@@ -527,12 +516,26 @@ def run(argv: List[str] | None = None) -> int:
     theme_m7 = _score_magnificent7(
         market_payload,
         theme_m7_weights,
-        degraded,
+        theme_m7_degraded,
         sentiment_score=sentiment_score_value,
         sentiment_fallback=not sentiment_available,
     )
 
     themes = [theme_ai, theme_m7, theme_btc]
+    global_degraded = any(theme.degraded for theme in themes)
+
+    if global_degraded and os.getenv("STRICT"):
+        log(logger, logging.ERROR, "scoring_strict_abort", strict=True)
+        run_meta.record_step(
+            OUT_DIR,
+            "scoring",
+            "failed",
+            trading_day=trading_day,
+            degraded=True,
+            strict=True,
+        )
+        return 2
+
     actions = _build_actions(themes, thresholds)
 
     history_payload = _load_json(SCORE_HISTORY_PATH)
@@ -576,7 +579,7 @@ def run(argv: List[str] | None = None) -> int:
         "date": trading_day,
         "themes": [theme.to_dict() for theme in themes],
         "events": raw_events.get("events", []),
-        "degraded": degraded,
+        "degraded": global_degraded,
         "thresholds": thresholds,
         "etl_status": etl_status,
     }
@@ -617,7 +620,7 @@ def run(argv: List[str] | None = None) -> int:
         logger,
         logging.INFO,
         "scoring_complete",
-        degraded=degraded,
+        degraded=global_degraded,
         themes=len(themes),
         duration_seconds=round(duration, 2),
         config_version=config_version,
@@ -627,7 +630,7 @@ def run(argv: List[str] | None = None) -> int:
         "scoring",
         "completed",
         trading_day=trading_day,
-        degraded=degraded,
+        degraded=global_degraded,
         duration_seconds=round(duration, 2),
         config_version=config_version,
     )

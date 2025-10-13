@@ -17,3 +17,13 @@ Commit subjects stay under 72 characters and use the imperative mood (e.g., `Fix
 
 ## Configuration & Secrets
 Runtime credentials load from the `API_KEYS` environment variable; keep `api_keys.json.example` in sync with schema changes. Local overrides belong in untracked files or `.env`. Never commit live keys—exercise new fetchers with mock data and verify `out/etl_status.json` records graceful degradation. Document new flags in `config/` and ensure CI picks up defaults when behavior shifts.
+
+## Submission Guardrails
+- Changes touching `config/weights.yml`, digest/templates, or any contract field **must** update the README examples and accompanying tests (`pytest -k contract`) in the same PR. Missing updates are treated as release blockers.
+- Run `uv run pytest --cov=daily_messenger --cov-report=term-missing --cov-fail-under=70` and `uv run ruff check .` locally before sending a PR. CI enforces these commands and will reject runs that skip them.
+- Attach representative artefacts from `out/` when digest layouts, cards, or weights shift so reviewers can validate the rendered output.
+
+## Branch Rules & CODEOWNERS
+- `main` is protected; all merges require a green CI run plus review approval.
+- Paths under `src/daily_messenger/digest/**` and `config/**` require at least **two** reviewers from the code owner group before merging.
+- Keep PR descriptions concise but explicit about data-contract or config impacts to unblock CODEOWNER review quickly.

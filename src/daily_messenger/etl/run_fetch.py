@@ -23,8 +23,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote
 from xml.etree import ElementTree as ET
 
-import pytz
 import requests
+from zoneinfo import ZoneInfo
 
 from daily_messenger.common import run_meta
 from daily_messenger.common.logging import log, setup_logger
@@ -38,6 +38,7 @@ else:  # pragma: no cover - runtime convenience for direct script execution
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 OUT_DIR = PROJECT_ROOT / "out"
 STATE_DIR = PROJECT_ROOT / "state"
+PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
 
 ALPHA_VANTAGE_SYMBOLS = {
     "SPX": "SPY",  # S&P 500 ETF proxy
@@ -120,8 +121,7 @@ def _current_trading_day() -> str:
     override = os.getenv("DM_OVERRIDE_DATE")
     if override:
         return override
-    tz = pytz.timezone("America/Los_Angeles")
-    now = datetime.now(tz)
+    now = datetime.now(PACIFIC_TZ)
     return now.strftime("%Y-%m-%d")
 
 
@@ -2164,8 +2164,7 @@ def _simulate_btc_theme(trading_day: str) -> Tuple[Dict[str, Any], FetchStatus]:
 
 
 def _simulate_events(trading_day: str) -> Tuple[List[Dict[str, Any]], FetchStatus]:
-    tz = pytz.timezone("America/Los_Angeles")
-    today = datetime.now(tz)
+    today = datetime.now(PACIFIC_TZ)
     events = [
         {
             "title": "FOMC 会议纪要发布",

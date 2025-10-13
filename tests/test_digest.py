@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -150,3 +151,48 @@ def test_run_with_degraded_flag_marks_outputs(tmp_path: Path, monkeypatch: pytes
     digest_meta = meta["steps"]["digest"]
     assert digest_meta["status"] == "completed"
     assert digest_meta.get("degraded")
+
+
+def test_run_with_frozen_clock_renders_stable_timestamp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(digest, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(digest, "TEMPLATE_DIR", tmp_path / "templates")
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            base = datetime(2024, 4, 5, 8, 30, tzinfo=timezone.utc)
+            if tz is None:
+                return base
+            return base.astimezone(tz)
+
+    monkeypatch.setattr(digest, "datetime", FrozenDateTime)
+
+    scores_payload = {
+        "date": "2024-04-05",
+        "degraded": False,
+        "themes": [
+            {
+                "label": "AI",
+                "name": "ai",
+                "total": 82.3,
+                "breakdown": {
+                    "fundamental": 78.0,
+                    "valuation": 65.0,
+                    "sentiment": 58.0,
+                    "liquidity": 62.0,
+                    "event": 55.0,
+                },
+            }
+        ],
+        "events": [],
+    }
+    actions_payload = {"items": []}
+
+    _write_json(tmp_path / "scores.json", scores_payload)
+    _write_json(tmp_path / "actions.json", actions_payload)
+
+    exit_code = digest.run([])
+
+    assert exit_code == 0
+    html = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert "2024-04-05 08:30 UTC" in html

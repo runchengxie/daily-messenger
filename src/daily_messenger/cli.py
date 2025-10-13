@@ -78,12 +78,17 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.command == "fetch":
         with _env_override("DM_OVERRIDE_DATE", args.date):
-            code = _execute_step("etl", run_fetch.run, ["--force"] if args.force else None, logger)
+            code = _execute_step(
+                "etl",
+                run_fetch.run,
+                ["--force"] if args.force else [],
+                logger,
+            )
         return code
 
     if args.command == "score":
         with _env_override("DM_OVERRIDE_DATE", args.date), _env_override("STRICT", "1" if args.strict else None):
-            step_args = ["--force"] if args.force else None
+            step_args = ["--force"] if args.force else []
             code = _execute_step("scoring", run_scores.run, step_args, logger)
         return code
 
@@ -92,18 +97,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             digest_args: List[str] = []
             if args.degraded:
                 digest_args.append("--degraded")
-            code = _execute_step("digest", make_daily.run, digest_args or None, logger)
+            code = _execute_step("digest", make_daily.run, digest_args, logger)
         return code
 
     # command == run
     exit_code = 0
     with _env_override("DM_OVERRIDE_DATE", args.date):
-        fetch_args = ["--force"] if args.force_fetch else None
+        fetch_args = ["--force"] if args.force_fetch else []
         exit_code = _execute_step("etl", run_fetch.run, fetch_args, logger)
         if exit_code != 0:
             return exit_code
 
-        score_args = ["--force"] if args.force_score else None
+        score_args = ["--force"] if args.force_score else []
         with _env_override("STRICT", "1" if args.strict else None):
             exit_code = _execute_step("scoring", run_scores.run, score_args, logger)
         if exit_code != 0:
@@ -112,7 +117,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         digest_args: List[str] = []
         if args.degraded:
             digest_args.append("--degraded")
-        exit_code = _execute_step("digest", make_daily.run, digest_args or None, logger)
+        exit_code = _execute_step("digest", make_daily.run, digest_args, logger)
     return exit_code
 
 

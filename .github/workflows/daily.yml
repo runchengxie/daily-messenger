@@ -80,7 +80,7 @@ jobs:
         uses: actions/deploy-pages@v4
 
       - name: Push Feishu card
-        if: always() && secrets.FEISHU_WEBHOOK != ''
+        if: ${{ always() && secrets.FEISHU_WEBHOOK != '' }}
         env:
           FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
           FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}

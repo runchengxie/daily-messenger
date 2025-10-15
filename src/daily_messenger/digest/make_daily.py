@@ -203,31 +203,51 @@ def _build_summary_lines(themes: List[Dict[str, object]], actions: List[Dict[str
     return lines[:12]
 
 
-def _build_card_payload(title: str, lines: List[str], report_url: str) -> Dict[str, object]:
+def _build_card_payload(
+    title: str,
+    lines: List[str],
+    report_url: str,
+    *,
+    news_preview: List[str] | None = None,
+    stock_preview: List[str] | None = None,
+) -> Dict[str, object]:
     content = "\n".join(lines)
+    elements: List[Dict[str, object]] = [
+        {
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": content},
+        }
+    ]
+
+    preview_chunks: List[str] = []
+    if news_preview:
+        preview_chunks.append("**新闻** " + " ｜ ".join(news_preview))
+    if stock_preview:
+        preview_chunks.append("**成分股** " + " ｜ ".join(stock_preview))
+    if preview_chunks:
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(preview_chunks)}})
+
+    elements.append(
+        {
+            "tag": "action",
+            "actions": [
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "查看完整报告"},
+                    "url": report_url,
+                    "type": "default",
+                }
+            ],
+        }
+    )
+
     return {
         "config": {"wide_screen_mode": True},
         "header": {
             "template": "blue",
             "title": {"tag": "plain_text", "content": title},
         },
-        "elements": [
-            {
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": content},
-            },
-            {
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "查看完整报告"},
-                        "url": report_url,
-                        "type": "default",
-                    }
-                ],
-            },
-        ],
+        "elements": elements,
     }
 
 
@@ -241,6 +261,8 @@ def run(argv: List[str] | None = None) -> int:
 
     scores = _load_json(OUT_DIR / "scores.json")
     actions_payload = _load_json(OUT_DIR / "actions.json")
+    raw_market_payload = _load_json(OUT_DIR / "raw_market.json")
+    raw_events_payload = _load_json(OUT_DIR / "raw_events.json")
 
     degraded = bool(scores.get("degraded")) or args.degraded
     date_str = scores.get("date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
@@ -267,6 +289,82 @@ def run(argv: List[str] | None = None) -> int:
     thresholds_candidate = scores.get("thresholds", {})
     thresholds = thresholds_candidate if isinstance(thresholds_candidate, dict) else {}
 
+    theme_details_candidate = scores.get("theme_details")
+    if isinstance(theme_details_candidate, Mapping):
+        theme_details = dict(theme_details_candidate)
+    else:
+        market_node = raw_market_payload.get("market", {}) if isinstance(raw_market_payload, Mapping) else {}
+        details_node = market_node.get("themes") if isinstance(market_node, Mapping) else {}
+        theme_details = dict(details_node) if isinstance(details_node, Mapping) else {}
+
+    ai_updates_candidate = scores.get("ai_updates")
+    if isinstance(ai_updates_candidate, list):
+        ai_updates = [item for item in ai_updates_candidate if isinstance(item, Mapping)]
+    else:
+        candidate = raw_events_payload.get("ai_updates") if isinstance(raw_events_payload, Mapping) else []
+        if not isinstance(candidate, list):
+            candidate = []
+        ai_updates = [item for item in candidate if isinstance(item, Mapping)]
+
+    news_preview: List[str] = []
+    for entry in ai_updates[:3]:
+        title = str(entry.get("title", "更新"))
+        url = entry.get("url")
+        if isinstance(url, str) and url:
+            news_preview.append(f"[{title}]({url})")
+        else:
+            news_preview.append(title)
+
+    stock_preview: List[str] = []
+    if theme_details:
+        preferred_order = ["magnificent7", "ai", "btc"]
+        selected_detail: Mapping[str, Any] | None = None
+        for key in preferred_order:
+            detail_candidate = theme_details.get(key) if isinstance(theme_details, Mapping) else None
+            if isinstance(detail_candidate, Mapping) and detail_candidate.get("symbols"):
+                selected_detail = detail_candidate
+                break
+        if selected_detail is None:
+            for detail_candidate in theme_details.values():
+                if isinstance(detail_candidate, Mapping) and detail_candidate.get("symbols"):
+                    selected_detail = detail_candidate
+                    break
+        if selected_detail:
+            symbols_list = selected_detail.get("symbols", [])
+            if isinstance(symbols_list, list):
+                sortable = []
+                for item in symbols_list:
+                    if isinstance(item, Mapping):
+                        change_value = item.get("change_pct")
+                        try:
+                            change_float = float(change_value)
+                        except (TypeError, ValueError):
+                            change_float = 0.0
+                        sortable.append((abs(change_float), item))
+                for _, item in sorted(sortable, key=lambda pair: pair[0], reverse=True)[:3]:
+                    symbol = item.get("symbol")
+                    if not symbol:
+                        continue
+                    change_value = item.get("change_pct")
+                    preview_text = str(symbol)
+                    try:
+                        change_float = float(change_value)
+                    except (TypeError, ValueError):
+                        change_float = None
+                    if change_float is not None:
+                        preview_text += f" {change_float:+.2f}%"
+                    else:
+                        price_value = item.get("price")
+                        try:
+                            price_float = float(price_value)
+                        except (TypeError, ValueError):
+                            price_float = None
+                        if price_float is not None:
+                            preview_text += f" {price_float:.2f}"
+                    stock_preview.append(preview_text)
+
+    raw_links = {"market": "raw_market.json", "events": "raw_events.json"}
+
     env = _build_env()
 
     payload = {
@@ -282,6 +380,9 @@ def run(argv: List[str] | None = None) -> int:
         "sentiment_labels": SENTIMENT_LABELS,
         "degraded": degraded,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "theme_details": theme_details,
+        "ai_updates": ai_updates,
+        "raw_links": raw_links,
     }
 
     html = _render_report(env, payload)
@@ -302,7 +403,13 @@ def run(argv: List[str] | None = None) -> int:
     report_url = f"https://{owner}.github.io/{repo_name}/{date_str}.html"
 
     card_title = f"内参 · 盘前{'（数据延迟）' if degraded else ''}"
-    card_payload = _build_card_payload(card_title, summary_lines or ["今日暂无摘要"], report_url)
+    card_payload = _build_card_payload(
+        card_title,
+        summary_lines or ["今日暂无摘要"],
+        report_url,
+        news_preview=news_preview,
+        stock_preview=stock_preview,
+    )
     (OUT_DIR / "digest_card.json").write_text(json.dumps(card_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     duration = (datetime.now(timezone.utc) - started_at).total_seconds()

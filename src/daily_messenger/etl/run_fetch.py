@@ -516,12 +516,22 @@ def _fetch_ai_rss_events(feeds: List[str]) -> Tuple[List[Dict[str, Any]], List[F
             normalized_date = _normalize_rss_date(date_text)
             if not normalized_date:
                 normalized_date = datetime.utcnow().strftime("%Y-%m-%d")
+            link_url = _rss_text(item, "link", "{*}link")
+            if not link_url:
+                link_node = item.find("link") or item.find("{*}link")
+                if link_node is not None:
+                    href = link_node.get("href")
+                    if href:
+                        link_url = href.strip()
+                    elif link_node.text:
+                        link_url = link_node.text.strip()
             feed_events.append(
                 {
                     "title": title,
                     "date": normalized_date,
                     "impact": "medium",
                     "source": url,
+                    "url": link_url or "",
                 }
             )
         events.extend(feed_events)
@@ -1858,12 +1868,15 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
         ps_values: List[Optional[float]] = []
         pb_values: List[Optional[float]] = []
         market_cap_total = 0.0
+        symbol_rows: List[Dict[str, Any]] = []
 
         for symbol in symbols:
             quote = quotes_norm.get(symbol.upper())
             if not quote:
                 continue
-            change_values.append(_safe_float(quote.get("changesPercentage")))
+            quote_source = quote.get("source") or source or "unknown"
+            change_val = _safe_float(quote.get("changesPercentage"))
+            change_values.append(change_val)
             price = _safe_float(quote.get("price"))
             market_cap = _safe_float(quote.get("marketCap"))
 
@@ -1913,6 +1926,26 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
             if computed_pb is not None:
                 pb_values.append(computed_pb)
 
+            pe_value = computed_pe if computed_pe is not None else _safe_float(quote.get("pe"))
+            ratio = quote.get("priceToSalesRatioTTM")
+            if ratio is None:
+                ratio = quote.get("priceToSalesRatio")
+            ps_value = computed_ps if computed_ps is not None else _safe_float(ratio)
+            pb_value = computed_pb
+
+            symbol_rows.append(
+                {
+                    "symbol": symbol,
+                    "price": round(price, 2) if isinstance(price, (int, float)) else None,
+                    "change_pct": round(change_val, 2) if isinstance(change_val, (int, float)) else None,
+                    "pe": round(pe_value, 2) if isinstance(pe_value, (int, float)) else None,
+                    "ps": round(ps_value, 2) if isinstance(ps_value, (int, float)) else None,
+                    "pb": round(pb_value, 2) if isinstance(pb_value, (int, float)) else None,
+                    "market_cap": round(market_cap, 2) if isinstance(market_cap, (int, float)) else None,
+                    "source": quote_source,
+                }
+            )
+
         if not change_values and not pe_values and not ps_values and not pb_values:
             continue
 
@@ -1927,6 +1960,7 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
             "avg_ps": round(ps_avg, 2) if ps_avg is not None else None,
             "avg_pb": round(pb_avg, 2) if pb_avg is not None else None,
             "market_cap": round(market_cap_total, 2) if market_cap_total else None,
+            "symbols": symbol_rows,
         }
 
     if not themes:
@@ -2507,11 +2541,13 @@ def run(argv: Optional[List[str]] = None) -> int:
         elif api_keys:
             statuses.append(FetchStatus(name="finnhub_earnings", ok=False, message="缺少 Finnhub API Key"))
 
+    ai_updates: List[Dict[str, Any]] = []
     if ai_feeds:
         ai_events, feed_statuses = _fetch_ai_rss_events(ai_feeds)
         statuses.extend(feed_statuses)
         if ai_events:
             events.extend(ai_events)
+            ai_updates = ai_events
 
     arxiv_events, arxiv_status = _fetch_arxiv_events(arxiv_params, arxiv_throttle)
     statuses.append(arxiv_status)
@@ -2532,7 +2568,7 @@ def run(argv: Optional[List[str]] = None) -> int:
         json.dump(market_payload, f, ensure_ascii=False, indent=2)
 
     with raw_events_path.open("w", encoding="utf-8") as f:
-        json.dump({"events": events}, f, ensure_ascii=False, indent=2)
+        json.dump({"events": events, "ai_updates": ai_updates}, f, ensure_ascii=False, indent=2)
 
     status_payload = {
         "date": trading_day,

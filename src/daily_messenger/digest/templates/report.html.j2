@@ -7,9 +7,13 @@
   <style>
     body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; margin: 2rem; color: #1f2933; }
     h1 { color: #2563eb; }
+    h2 { margin-top: 2rem; }
+    h3 { margin-top: 1.25rem; color: #1d4ed8; }
     table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
     th, td { border: 1px solid #d1d5db; padding: 0.5rem; text-align: left; vertical-align: top; }
     th { background: #eff6ff; }
+    a { color: #2563eb; text-decoration: none; }
+    a:hover { text-decoration: underline; }
     .degraded { color: #d97706; font-weight: 600; }
     .score-main { font-weight: 600; }
     .score-sub { font-size: 0.85rem; color: #4b5563; margin-top: 0.2rem; }
@@ -24,6 +28,8 @@
     .status-ok { color: #047857; font-weight: 600; }
     .status-fail { color: #b91c1c; font-weight: 600; }
     .event-empty { color: #6b7280; }
+    .appendix-list { padding-left: 1.2rem; }
+    .appendix-list li { margin-bottom: 0.4rem; }
   </style>
 </head>
 <body>
@@ -103,7 +109,7 @@
       </p>
       {% endif %}
     {% endif %}
-    {% if themes %}
+  {% if themes %}
     <h3>指标权重</h3>
     <ul class="weights-list">
       {% for theme in themes %}
@@ -118,8 +124,47 @@
         {% endif %}
       {% endfor %}
     </ul>
-    {% endif %}
+  {% endif %}
   </section>
+  {% if theme_details %}
+  <section>
+    <h2>抓取明细：主题成分与报价</h2>
+    {% for theme in themes %}
+      {% set detail = theme_details.get(theme.name) if theme_details else None %}
+      {% if detail and detail.symbols %}
+        <h3>{{ theme.label }}</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>代码</th>
+              <th>最新价</th>
+              <th>日变动</th>
+              <th>PE</th>
+              <th>PS</th>
+              <th>PB</th>
+              <th>市值</th>
+              <th>来源</th>
+            </tr>
+          </thead>
+          <tbody>
+          {% for row in detail.symbols %}
+            <tr>
+              <td>{{ row.symbol }}</td>
+              <td>{% if row.price is not none %}{{ '%.2f' | format(row.price) }}{% else %}—{% endif %}</td>
+              <td>{% if row.change_pct is not none %}{{ '%+.2f%%' | format(row.change_pct) }}{% else %}—{% endif %}</td>
+              <td>{% if row.pe is not none %}{{ '%.2f' | format(row.pe) }}{% else %}—{% endif %}</td>
+              <td>{% if row.ps is not none %}{{ '%.2f' | format(row.ps) }}{% else %}—{% endif %}</td>
+              <td>{% if row.pb is not none %}{{ '%.2f' | format(row.pb) }}{% else %}—{% endif %}</td>
+              <td>{% if row.market_cap is not none %}{{ '%.0f' | format(row.market_cap) }}{% else %}—{% endif %}</td>
+              <td>{{ row.source }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    {% endfor %}
+  </section>
+  {% endif %}
   <section>
     <h2>操作建议</h2>
     <ul>
@@ -149,6 +194,16 @@
       {% endfor %}
       </tbody>
     </table>
+  </section>
+  {% endif %}
+  {% if ai_updates %}
+  <section>
+    <h2>AI / RSS 更新</h2>
+    <ul>
+    {% for item in ai_updates %}
+      <li>{{ item.date }} · {% if item.url %}<a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}{% if item.source %}（源：{{ item.source }}）{% endif %}</li>
+    {% endfor %}
+    </ul>
   </section>
   {% endif %}
   <section>
@@ -188,8 +243,28 @@
     </table>
   </section>
   {% endif %}
+  <section>
+    <h2>附录：指标口径与公式</h2>
+    <h3>情绪打分</h3>
+    <ul class="appendix-list">
+      <li>Put/Call：对 CBOE 股票 Put/Call 取对数后，以历史均值及标准差标准化得到 <code>z</code>，再计算 <code>-tanh(z / 2)</code> 并映射为 <code>50 + 50 × (-tanh(z / 2))</code>。</li>
+      <li>AAII：将多头减空头的差值标准化得到 <code>z</code>，取 <code>tanh(z / 2)</code> 后映射为 <code>50 + 50 × tanh(z / 2)</code>。</li>
+      <li>综合情绪：取两项压缩结果的平均值，范围约 [-1, 1]，最终换算到 0–100 区间。</li>
+    </ul>
+    <h3>主题评分</h3>
+    <p>每个主题包含基本面、估值、情绪、资金、事件五个一级因子，按配置权重求和：<code>total = Σ weight_k × breakdown_k</code>。Magnificent 7 使用市值、PE、ETF 流动等指标；BTC 主题额外纳入基差与资金流。</p>
+    <h3>未来事件</h3>
+    <p>事件列表汇总 Trading Economics 的 5 日宏观窗口，并结合 AI/RSS 与 arXiv 更新，帮助快速浏览即将发生的潜在催化。</p>
+  </section>
   <footer>
     <p>报告自动生成时间：{{ generated_at }}</p>
+    {% set market_link = raw_links.get('market') if raw_links else 'raw_market.json' %}
+    {% set events_link = raw_links.get('events') if raw_links else 'raw_events.json' %}
+    <p>原始产物：
+      {% if market_link %}<a href="{{ market_link }}" target="_blank" rel="noopener">{{ market_link }}</a>{% endif %}
+      {% if market_link and events_link %} · {% endif %}
+      {% if events_link %}<a href="{{ events_link }}" target="_blank" rel="noopener">{{ events_link }}</a>{% endif %}
+    </p>
   </footer>
 </body>
 </html>

@@ -438,6 +438,8 @@ def run(argv: List[str] | None = None) -> int:
     market_payload = raw_market_payload.get("market", {})
     if not isinstance(market_payload, dict):
         market_payload = {}
+    theme_details_raw = market_payload.get("themes", {})
+    theme_details = theme_details_raw if isinstance(theme_details_raw, dict) else {}
     btc_payload = raw_market_payload.get("btc", {})
     if not isinstance(btc_payload, dict):
         btc_payload = {}
@@ -575,6 +577,7 @@ def run(argv: List[str] | None = None) -> int:
         updated_entries.append({"date": trading_day, "total": round(theme.total, 2)})
         themes_history[theme.name] = updated_entries[-30:]
 
+    ai_updates = raw_events.get("ai_updates", [])
     scores_payload = {
         "date": trading_day,
         "themes": [theme.to_dict() for theme in themes],
@@ -583,6 +586,10 @@ def run(argv: List[str] | None = None) -> int:
         "thresholds": thresholds,
         "etl_status": etl_status,
     }
+    if theme_details:
+        scores_payload["theme_details"] = theme_details
+    if isinstance(ai_updates, list) and ai_updates:
+        scores_payload["ai_updates"] = ai_updates
     if config_version is not None:
         scores_payload["config_version"] = config_version
     if config_changed_at:

@@ -49,10 +49,12 @@ def test_fetch_ai_rss_events_parses_items(monkeypatch, load_run_fetch):
             <item>
                 <title>OpenAI Update</title>
                 <pubDate>Mon, 01 Apr 2024 10:00:00 GMT</pubDate>
+                <link>https://example.com/rss</link>
             </item>
             <item>
                 <title>Another Story</title>
                 <pubDate>Tue, 02 Apr 2024 12:00:00 GMT</pubDate>
+                <link>https://example.com/rss-2</link>
             </item>
         </channel></rss>
     """
@@ -67,6 +69,7 @@ def test_fetch_ai_rss_events_parses_items(monkeypatch, load_run_fetch):
     events, statuses = module._fetch_ai_rss_events(module.AI_NEWS_FEEDS)
     assert len(events) == 2
     assert events[0]["source"] == "https://example.com/rss"
+    assert events[0]["url"] == "https://example.com/rss"
     assert any(not status.ok for status in statuses)
     assert any(status.ok for status in statuses)
 
@@ -176,6 +179,7 @@ def test_run_includes_ai_sources(tmp_path, monkeypatch, load_run_fetch):
                     "date": "2024-04-02",
                     "impact": "medium",
                     "source": feeds[0],
+                    "url": "https://example.com/rss-item",
                 }
             ],
             [module.FetchStatus(name="ai_rss_1", ok=True, message="ok")],
@@ -207,3 +211,4 @@ def test_run_includes_ai_sources(tmp_path, monkeypatch, load_run_fetch):
     assert "宏观事件" in titles
     assert "RSS Event" in titles
     assert "arXiv: Paper" in titles
+    assert payload["ai_updates"][0]["title"] == "RSS Event"

@@ -91,6 +91,9 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked --no-dev
 
+      - name: Check CLI help snippet
+        run: uv run python project_tools/update_cli_help.py --check
+
       - name: Guard 07:00–07:10 PT window
         if: ${{ github.event_name == 'schedule' }}
         env:

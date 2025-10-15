@@ -12,11 +12,19 @@
 uv sync --locked --no-dev
 
 # 3) 最小化运行（无密钥会触发降级但仍能产出）
-API_KEYS='{}' dm run --force-score
-# 常用参数：--date YYYY-MM-DD, --force-fetch, --force-score, --degraded
+API_KEYS='{}' uv run dm run --force-score
+# 常用旗标：--date YYYY-MM-DD, --force-fetch, --force-score, --degraded
 ```
 
 > ⚠️ **定时执行窗口**：GitHub Actions 仅在工作日 UTC 14:00 触发，且会校验当前是否处于 **07:00–07:10 PT** 播报窗口。超出窗口 CI 会立即退出，不会重新排程。
+
+## 常用命令速记
+
+* `uv sync --locked --no-dev`：本地环境与 CI 保持一致。
+
+* `uv run dm run --force-score`：强制评分的一键流水线（默认读取 `API_KEYS` 或回退到降级路径）。
+
+> 💡 **浏览器链路（可选）**：完整复现 ETF 资金流抓取需额外安装 Node.js 20 与 Playwright。CI 会预装，本地如仅需最小化运行可跳过；若要调试该链路可参考下文“环境准备”。
 
 ## 项目概览
 
@@ -154,40 +162,39 @@ pip install pytest pytest-cov ruff
 推荐使用统一 CLI 一键跑完整流水线：
 
 ```bash
-dm run --force-score
+uv run dm run --force-score
 ```
 
-常见参数：`--date 2024-04-01`（覆盖交易日，供回溯测试）、`--force-fetch` / `--force-score`（跳过幂等标记，强制刷新）、`--degraded`（在渲染阶段标记降级输出）、`--disable-throttle`（禁用抓取端的节流休眠，受控环境使用）。
+常用旗标：`--date 2024-04-01`（覆盖交易日，供回溯测试）、`--force-fetch` / `--force-score`（跳过幂等标记，强制刷新）、`--degraded`（在渲染阶段标记降级输出）、`--disable-throttle`（禁用抓取端的节流休眠，受控环境使用）。
 
 保留原始子命令亦可单独执行：
 
 ```bash
-dm fetch             # 抓取行情、情绪、事件
-dm score --force     # 计算主题得分与建议
-dm digest            # 渲染网页、摘要、卡片
+uv run dm fetch              # 抓取行情、情绪、事件
+uv run dm score --force      # 计算主题得分与建议
+uv run dm digest             # 渲染网页、摘要、卡片
 ```
 
-上述三条 `python -m ...` 指令分别等价于 `uv run python -m daily_messenger.etl.run_fetch`、`uv run python -m daily_messenger.scoring.run_scores --force`、`uv run python -m daily_messenger.digest.make_daily`，首选 `dm run` 在一次执行内串联全部阶段。
+上述三条 `uv run dm ...` 指令分别等价于 `uv run python -m daily_messenger.etl.run_fetch`、`uv run python -m daily_messenger.scoring.run_scores --force`、`uv run python -m daily_messenger.digest.make_daily`，首选 `uv run dm run` 在一次执行内串联全部阶段。
 
-### 完整 CLI 参考
+### 命令速查表
 
-以下列表直接对应 `src/daily_messenger/cli.py` 暴露的旗标，可快速查找每个子命令的可用参数：
-
-```text
-dm run [--date YYYY-MM-DD] [--force-fetch] [--force-score] [--degraded] [--strict] [--disable-throttle]
-dm fetch [--date YYYY-MM-DD] [--force] [--disable-throttle]
-dm score [--date YYYY-MM-DD] [--force] [--strict]
-dm digest [--date YYYY-MM-DD] [--degraded]
-```
+| 命令 | 作用 | 常用旗标 |
+| ---- | ---- | -------- |
+| `uv run dm run` | 串联抓取 → 评分 → 渲染 | `--date`、`--force-fetch`、`--force-score`、`--degraded`、`--strict`、`--disable-throttle` |
+| `uv run dm fetch` | 仅执行 ETL | `--date`、`--force`、`--disable-throttle` |
+| `uv run dm score` | 仅执行评分 | `--date`、`--force`、`--strict` |
+| `uv run dm digest` | 仅执行渲染 | `--date`、`--degraded` |
 
 > 提示：也可通过设置 `DM_DISABLE_THROTTLE=1` 达成与 `--disable-throttle` 相同的效果。
 
 ## CLI 帮助（自动生成）
 
-`project_tools/update_cli_help.py` 会调用 `python -m daily_messenger.cli --help` 并更新下方代码块，确保 README 与实际 CLI 同步：
+`project_tools/update_cli_help.py` 会调用 `python -m daily_messenger.cli --help` 并更新下方代码块，确保 README 与实际 CLI 同步；在 CI 中可运行 `uv run python project_tools/update_cli_help.py --check` 自动守护是否漂移：
 
 <!-- cli-help:start -->
 ```text
+$ dm --help
 usage: dm [-h] {run,fetch,score,digest} ...
 
 Daily Messenger CLI
@@ -201,6 +208,45 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
+
+$ dm run --help
+usage: dm run [-h] [--date DATE] [--force-fetch] [--force-score] [--degraded]
+              [--strict] [--disable-throttle]
+
+options:
+  -h, --help          show this help message and exit
+  --date DATE         Override trading day (YYYY-MM-DD)
+  --force-fetch       Force refresh ETL step
+  --force-score       Force recompute scoring step
+  --degraded          Render digest in degraded mode
+  --strict            Enable STRICT mode during scoring
+  --disable-throttle  Disable network throttling helpers
+
+$ dm fetch --help
+usage: dm fetch [-h] [--date DATE] [--force] [--disable-throttle]
+
+options:
+  -h, --help          show this help message and exit
+  --date DATE         Override trading day (YYYY-MM-DD)
+  --force             Force refresh ETL step
+  --disable-throttle  Disable network throttling helpers
+
+$ dm score --help
+usage: dm score [-h] [--date DATE] [--force] [--strict]
+
+options:
+  -h, --help   show this help message and exit
+  --date DATE  Override trading day (YYYY-MM-DD)
+  --force      Force recompute scoring
+  --strict     Enable STRICT mode
+
+$ dm digest --help
+usage: dm digest [-h] [--date DATE] [--degraded]
+
+options:
+  -h, --help   show this help message and exit
+  --date DATE  Override trading day (YYYY-MM-DD)
+  --degraded   Render in degraded mode
 ```
 <!-- cli-help:end -->
 
@@ -292,6 +338,8 @@ options:
 
 * `sentiment` 结构来源于情绪聚合器，若缺失则整个字段应省略。
 
+* 可选字段：`theme_details`（用于渲染主题成分预览）、`ai_updates`（AI 事件补充）、`config_version` / `config_changed_at`（当前权重版本元数据）。出现时请按原结构保留，避免模板或合同测试缺项。
+
 ### `out/actions.json`
 
 ```json
@@ -347,6 +395,11 @@ options:
 
 * 卡片结构遵循飞书互动卡片 JSON 协议；渲染阶段会根据 `--degraded` 在标题与内容中追加“（数据延迟）”。
 
+### 报告模板可选字段
+
+* `raw_links`（字典，可选）—— 用于在 HTML 模板底部渲染 “原始产物” 链接，默认键包含 `market` 与 `events`。如需覆盖链接或追加更多原始文件，请扩展该映射而非删除。
+* `news_preview` / `stock_preview`（列表，可选）—— 当存在对应素材时，摘要与飞书卡片会将其拼接到标题下方。缺失时应保留空列表或省略字段，避免模板逻辑出错。
+
 ## 幂等控制与降级提示
 
 | 标记文件 | 生成节点 | 作用 | 清理建议 |
@@ -360,6 +413,8 @@ options:
 * 降级触发条件：`out/etl_status.json.ok=false`、`scores.json.degraded=true` 或 CLI 传入 `--degraded`。降级状态会在网页、摘要与卡片中显著提示。
 
 ## 飞书推送
+
+> 缺少 `FEISHU_WEBHOOK` 或推送失败时脚本会记录告警并以 0 退出码收尾，不会阻断 CI。
 
 ```bash
 export FEISHU_WEBHOOK=https://open.feishu.cn/xxx
@@ -390,11 +445,20 @@ uv run python -m daily_messenger.tools.post_feishu \
 ## 测试与质量保障
 
 ```bash
-uv run pytest                                    # 单元与集成测试
-uv run pytest -k cli_pipeline --maxfail=1        # CLI 冒烟与合同测试
+# 冒烟
+uv run pytest -k cli_pipeline --maxfail=1
+
+# 合同
+uv run pytest -k contract
+
+# 覆盖率 / 全量
 uv run pytest --cov=daily_messenger --cov-report=term-missing --cov-fail-under=70
-uv run ruff check .                              # 代码风格检查（可附加 --fix 自动修复）
+
+# 静态检查
+uv run ruff check .  # 可加 --fix 自动修复
 ```
+
+冒烟命令用于快速确认 CLI 端到端产物是否齐全，`-k contract` 聚焦 JSON 契约字段，覆盖率命令在提交前确保变更未降低 70% 阈值。
 
 测试重点包括：
 

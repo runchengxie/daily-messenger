@@ -23,7 +23,7 @@ jobs:
     env:
       FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
       FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
-      EDGAR_USER_AGENT: "daily-messenger/1.0 (mailto:[email protected])"
+      EDGAR_USER_AGENT: "daily-messenger/1.0 (mailto:xieruncheng@gmail.com)"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

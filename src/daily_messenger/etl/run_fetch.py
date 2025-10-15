@@ -12,6 +12,7 @@ import csv
 import json
 import logging
 import os
+import random
 import sys
 import time
 from dataclasses import dataclass, asdict
@@ -294,13 +295,124 @@ ARXIV_THROTTLE: float = DEFAULT_ARXIV_THROTTLE
 API_KEYS_CACHE, AI_NEWS_FEEDS, ARXIV_QUERY_PARAMS, ARXIV_THROTTLE = _load_configuration()
 
 
-def _request_json(url: str, *, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+def _respect_retry_after(resp: requests.Response) -> Optional[float]:
+    retry_after = resp.headers.get("Retry-After")
+    if not retry_after:
+        return None
+    try:
+        return float(retry_after)
+    except ValueError:
+        return None
+
+
+def _sleep_exact(seconds: float) -> None:
+    if seconds and seconds > 0:
+        time.sleep(seconds)
+
+
+class RetryPolicy:
+    def __init__(
+        self,
+        retries: int = 3,
+        backoff_start: float = 0.6,
+        backoff_factor: float = 2.0,
+        jitter: float = 0.3,
+        status_forcelist: Iterable[int] = (408, 409, 425, 429, 500, 502, 503, 504),
+        max_sleep: float = 8.0,
+        per_request_timeout: float = REQUEST_TIMEOUT,
+        hard_deadline: Optional[float] = 20.0,
+    ):
+        self.retries = retries
+        self.backoff_start = backoff_start
+        self.backoff_factor = backoff_factor
+        self.jitter = jitter
+        self.status_forcelist = set(status_forcelist)
+        self.max_sleep = max_sleep
+        self.per_request_timeout = per_request_timeout
+        self.hard_deadline = hard_deadline
+
+
+RETRY_DEFAULT = RetryPolicy()
+RETRY_EDGAR = RetryPolicy(retries=3, backoff_start=0.6, backoff_factor=2.0, jitter=0.25)
+
+
+def _request_json(
+    url: str,
+    *,
+    method: str = "GET",
+    session: Optional[requests.Session] = None,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Any = None,
+    headers: Optional[Dict[str, str]] = None,
+    policy: RetryPolicy = RETRY_DEFAULT,
+    after_each_sleep: float = 0.0,
+) -> Any:
+    method = method.upper()
+    own_session = session or requests.Session()
+    close_session = session is None
     hdrs = {"User-Agent": USER_AGENT}
     if headers:
         hdrs.update(headers)
-    resp = requests.get(url, params=params, headers=hdrs, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    return resp.json()
+    attempt = 0
+    delay = policy.backoff_start
+    start = time.monotonic()
+    try:
+        while True:
+            attempt += 1
+            try:
+                resp = own_session.request(
+                    method,
+                    url,
+                    params=params,
+                    json=json_body,
+                    headers=hdrs,
+                    timeout=policy.per_request_timeout,
+                )
+            except requests.RequestException as exc:
+                if attempt > policy.retries:
+                    raise RuntimeError(f"HTTP 请求失败（已重试 {attempt - 1} 次）: {exc}") from exc
+                sleep_seconds = min(delay * (1.0 + random.random() * policy.jitter), policy.max_sleep)
+                if policy.hard_deadline and (time.monotonic() - start + sleep_seconds) > policy.hard_deadline:
+                    raise RuntimeError("HTTP 请求失败：超过重试预算") from exc
+                _sleep_exact(sleep_seconds)
+                delay *= policy.backoff_factor
+                continue
+
+            if resp.status_code in policy.status_forcelist:
+                retry_after = _respect_retry_after(resp) if resp.status_code == 429 else None
+                if attempt > policy.retries:
+                    resp.raise_for_status()
+                sleep_seconds = (
+                    retry_after
+                    if retry_after is not None
+                    else min(delay * (1.0 + random.random() * policy.jitter), policy.max_sleep)
+                )
+                if policy.hard_deadline and (time.monotonic() - start + sleep_seconds) > policy.hard_deadline:
+                    resp.raise_for_status()
+                _sleep_exact(sleep_seconds)
+                delay *= policy.backoff_factor
+                continue
+
+            try:
+                resp.raise_for_status()
+            except Exception as exc:  # noqa: BLE001
+                snippet = resp.text[:200] if getattr(resp, "text", None) else str(exc)
+                raise RuntimeError(f"HTTP 状态错误: {resp.status_code} {snippet}") from exc
+
+            try:
+                payload = resp.json()
+            except ValueError as exc:
+                if attempt <= policy.retries:
+                    _sleep_exact(min(0.5 * (1 + random.random()), 1.0))
+                    continue
+                raise RuntimeError("响应解析失败（JSON）") from exc
+
+            if after_each_sleep > 0:
+                _sleep_exact(after_each_sleep)
+            return payload
+    finally:
+        if close_session:
+            own_session.close()
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -542,14 +654,13 @@ def _fetch_sosovalue_latest_flow(api_key: str) -> Tuple[Optional[float], FetchSt
     }
     body = {"type": "us-btc-spot"}
     try:
-        response = requests.post(
+        payload = _request_json(
             SOSOVALUE_INFLOW_URL,
-            json=body,
+            method="POST",
+            json_body=body,
             headers=headers,
-            timeout=REQUEST_TIMEOUT,
+            policy=RetryPolicy(retries=2, backoff_start=0.8, hard_deadline=15.0),
         )
-        response.raise_for_status()
-        payload = response.json()
     except Exception as exc:  # noqa: BLE001
         return None, FetchStatus(name="btc_etf_flow_sosovalue", ok=False, message=f"SoSoValue 请求失败: {exc}")
 
@@ -610,11 +721,10 @@ def _fetch_coinglass_latest_flow(api_key: str) -> Tuple[Optional[float], FetchSt
     }
     params = {"page": 1, "size": 10}
     errors: List[str] = []
+    policy = RetryPolicy(retries=2, backoff_start=0.7, hard_deadline=12.0)
     for url in COINGLASS_ETF_ENDPOINTS:
         try:
-            response = requests.get(url, params=params, headers=headers, timeout=REQUEST_TIMEOUT)
-            response.raise_for_status()
-            payload = response.json()
+            payload = _request_json(url, params=params, headers=headers, policy=policy)
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{url}: {exc}")
             continue
@@ -1156,24 +1266,23 @@ def _init_edgar_session() -> requests.Session:
 
 
 def _edgar_request_json(session: requests.Session, url: str) -> Dict[str, Any]:
-    delay = 0.6
-    for attempt in range(1, 4):
-        response = session.get(url, timeout=REQUEST_TIMEOUT)
-        if response.status_code == 429 and attempt < 3:
-            _sleep(delay)
-            delay *= 2
-            continue
-        try:
-            response.raise_for_status()
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f"EDGAR 请求失败: {exc}") from exc
-        try:
-            payload = response.json()
-        except ValueError as exc:  # JSON decode error
-            raise RuntimeError("EDGAR 响应解析失败") from exc
-        _sleep(EDGAR_THROTTLE)
-        return payload
-    raise RuntimeError("EDGAR 请求多次重试后仍失败")
+    try:
+        payload = _request_json(
+            url,
+            session=session,
+            headers={
+                "User-Agent": EDGAR_USER_AGENT,
+                "Accept": "application/json",
+                "Accept-Encoding": "gzip, deflate",
+            },
+            policy=RETRY_EDGAR,
+            after_each_sleep=EDGAR_THROTTLE,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"EDGAR 请求失败: {exc}") from exc
+    if not isinstance(payload, (dict, list)):
+        raise RuntimeError("EDGAR 响应解析失败")
+    return payload
 
 
 _EDGAR_TICKER_CACHE: Optional[Dict[str, str]] = None
@@ -1544,6 +1653,26 @@ def _fetch_edgar_fundamentals(
         else:
             errors.append(f"{ticker}: 财报数据不足")
     return results, missing, errors
+
+
+def _edgar_healthcheck() -> FetchStatus:
+    session = _init_edgar_session()
+    try:
+        mapping = _load_edgar_ticker_mapping(session)
+        if not mapping:
+            raise RuntimeError("EDGAR 代码映射为空")
+        cik = mapping.get("AAPL")
+        if not cik:
+            try:
+                cik = next(iter(mapping.values()))
+            except StopIteration as exc:
+                raise RuntimeError("EDGAR 代码映射缺失 CIK") from exc
+        _fetch_edgar_companyfacts(session, cik)
+        return FetchStatus(name="edgar", ok=True, message=f"EDGAR 正常（UA={EDGAR_USER_AGENT}）")
+    except Exception as exc:  # noqa: BLE001
+        return FetchStatus(name="edgar", ok=False, message=f"{exc}")
+    finally:
+        session.close()
 
 
 def _fetch_yahoo_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
@@ -2281,6 +2410,11 @@ def run(argv: Optional[List[str]] = None) -> int:
         for name, metrics in themes.items():
             theme_metrics.setdefault(name, {}).update(metrics)
     else:
+        overall_ok = False
+
+    edgar_status = _edgar_healthcheck()
+    statuses.append(edgar_status)
+    if not edgar_status.ok:
         overall_ok = False
 
     if market_data is not None and theme_metrics:

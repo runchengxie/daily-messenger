@@ -414,19 +414,49 @@ options:
 
 ## 飞书推送
 
-> 缺少 `FEISHU_WEBHOOK` 或推送失败时脚本会记录告警并以 0 退出码收尾，不会阻断 CI。
+> 缺少对应频道的 Webhook（`FEISHU_WEBHOOK_DAILY` / `FEISHU_WEBHOOK_ALERTS`，或历史兼容变量 `FEISHU_WEBHOOK`）时脚本会记录告警并以 0 退出码收尾，不会阻断 CI。
 
 ```bash
-export FEISHU_WEBHOOK=https://open.feishu.cn/xxx
+export FEISHU_WEBHOOK_DAILY=https://open.feishu.cn/xxx
+export FEISHU_SECRET_DAILY=xxxxxxxx
+export FEISHU_WEBHOOK_ALERTS=https://open.feishu.cn/yyy
+export FEISHU_SECRET_ALERTS=yyyyyyyy
+
+# 日报/小时总结（默认使用互动卡片）
 uv run python -m daily_messenger.tools.post_feishu \
-  --webhook "$FEISHU_WEBHOOK" \
+  --channel daily \
   --summary out/digest_summary.txt \
   --card out/digest_card.json
+
+# 盘中告警（text post）
+uv run python -m daily_messenger.tools.post_feishu \
+  --channel alerts \
+  --mode post \
+  --summary out/alerts_snapshot.txt
 ```
 
-* 也可以直接运行 `uv run python -m daily_messenger.tools.post_feishu`，若 `out/digest_card.json` 存在则发送互动卡片，否则发送文本摘要（默认读取 `out/digest_summary.txt`）。
+* 如未显式指定 `--webhook` / `--secret`，脚本将按 `channel` 读取 `FEISHU_WEBHOOK_<CHANNEL>` 与 `FEISHU_SECRET_<CHANNEL>`，再回退到历史变量 `FEISHU_WEBHOOK` / `FEISHU_SECRET`。
+* 仍可直接运行 `uv run python -m daily_messenger.tools.post_feishu`，若 `out/digest_card.json` 存在则发送互动卡片，否则退化到 `post` 模式；缺少 Webhook 时安全跳过。
 
-可选设置 `FEISHU_SECRET` 以启用签名校验；缺少 Webhook 时脚本会安全退出并提示。
+## XAU/USD 技术分析报告
+
+黄金技术面报告使用 `config/ta_xau.yml` 描述指标窗口与产物路径，通过 OANDA Practice REST 获取日线、小时与 5 分钟 midpoint K 线，计算 SMA50/200、RSI14、ATR14 与前一交易日枢轴点。
+
+```bash
+export OANDA_TOKEN=xxxxxxxxxxxxxxxx
+uv run python -m daily_messenger.digest.ta_report --config config/ta_xau.yml
+# 输出：out/xau_report.md
+```
+
+默认生成 Markdown 报告（趋势概览 / 指标数值 / 支撑压力 / 盘中观察 / 启发式提示），适合作为每日收盘或盘前摘要。`report.intraday_granularities` 可配置 `["H1", "M5"]` 等粒度获取盘中快照，若只需日报可关闭 `include_intraday`。
+
+推荐频率：
+
+- **日报（D）**：纽约 17:00 切日后生成完整报告，进入日报/小时频道。
+- **小时（H1）**：视需求追加轻量更新，可合并在日报频道内。
+- **触发/5 分钟（M5）**：仅推送告警至 `alerts` 频道，结合 Feishu 双 Webhook 做节流与静音。
+
+提示：OANDA 返回的 volume 是 tick 计数，适用于波动度评估，不等同于交易所成交量。生产环境请根据需要替换为正式实时数据源。
 
 ## 日志与观测
 
@@ -439,7 +469,7 @@ uv run python -m daily_messenger.tools.post_feishu \
 ## 故障排查指南
 
 * **缺少 `API_KEYS`**：流水线会自动进入降级模式，模拟数据会在网页与摘要顶部加粗提示，同时 `out/etl_status.json.ok=false` 与 `run_meta.json` 中的 `degraded=true`。如需验证真实接口，可在本地导入最小化凭证并重新执行。
-* **未配置 `FEISHU_WEBHOOK`**：推送脚本会安全跳过，`daily_messenger.tools.post_feishu` 返回码为 0，并在日志中写出 `feishu_skip_no_webhook` 事件，不会阻断 CI。
+* **未配置飞书 Webhook**：当目标频道 (`FEISHU_WEBHOOK_DAILY` / `FEISHU_WEBHOOK_ALERTS` 或历史兼容变量 `FEISHU_WEBHOOK`) 缺失时，推送脚本会安全跳过并返回 0，同时记录 `feishu_skip_no_webhook` 事件，不会阻断 CI。
 * **如何定位缺失字段**：结构化日志输出在 `out/run_meta.json` 中可按步骤查状态；产物契约失配时，请对照下文“产物契约”示例，同时运行 `pytest -k contract` 触发合同测试以获得具体断言。
 
 ## 测试与质量保障

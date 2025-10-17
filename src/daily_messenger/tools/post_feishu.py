@@ -11,7 +11,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 import requests
 
@@ -60,17 +60,45 @@ def _build_payload(args: argparse.Namespace, summary: str, card: str | None) -> 
     }
 
 
+def _normalize_channel(value: str | None) -> str:
+    if not value:
+        return "daily"
+    lowered = value.lower()
+    if lowered in {"daily", "report"}:
+        return "daily"
+    if lowered in {"alerts", "alert"}:
+        return "alerts"
+    raise ValueError(f"未知频道 {value!r}，请使用 daily 或 alerts")
+
+
+def _resolve_credentials(
+    channel: str,
+    explicit_webhook: Optional[str],
+    explicit_secret: Optional[str],
+) -> Tuple[Optional[str], Optional[str]]:
+    if explicit_webhook:
+        return explicit_webhook, explicit_secret
+
+    suffix = channel.upper()
+    channel_webhook = os.getenv(f"FEISHU_WEBHOOK_{suffix}")
+    channel_secret = os.getenv(f"FEISHU_SECRET_{suffix}")
+
+    fallback_webhook = os.getenv("FEISHU_WEBHOOK")
+    fallback_secret = os.getenv("FEISHU_SECRET")
+
+    webhook = channel_webhook or fallback_webhook
+    secret = explicit_secret or channel_secret or fallback_secret
+    return webhook, secret
+
+
 def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Push message to Feishu webhook")
     from pathlib import Path as _P
 
     base_dir = _P(__file__).resolve().parents[3]
     out_dir = base_dir / "out"
-    parser.add_argument(
-        "--webhook",
-        default=os.getenv("FEISHU_WEBHOOK"),
-        help="飞书自定义机器人 Webhook（可从 FEISHU_WEBHOOK 读取）",
-    )
+    parser.add_argument("--channel", default="daily", help="消息频道（daily 或 alerts）")
+    parser.add_argument("--webhook", help="飞书自定义机器人 Webhook（覆盖 channel 推断）")
     parser.add_argument(
         "--summary",
         default=str(out_dir / "digest_summary.txt"),
@@ -81,12 +109,19 @@ def run(argv: list[str] | None = None) -> int:
         default=str(out_dir / "digest_card.json"),
         help="互动卡片 JSON 文件路径（默认 out/digest_card.json）",
     )
-    parser.add_argument("--secret", default=os.getenv("FEISHU_SECRET"), help="签名密钥")
+    parser.add_argument("--secret", help="签名密钥（覆盖 channel 推断）")
     parser.add_argument("--mode", choices=["interactive", "post"], default=None)
     parser.add_argument("--title", help="备用标题（post 模式使用）")
     args = parser.parse_args(argv)
 
     logger = setup_logger("feishu")
+
+    try:
+        channel = _normalize_channel(args.channel)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    webhook, secret = _resolve_credentials(channel, args.webhook, args.secret)
 
     summary = _read_file(args.summary)
     card_text = _read_file(args.card)
@@ -96,13 +131,13 @@ def run(argv: list[str] | None = None) -> int:
     card = card_text or None
 
     payload = _build_payload(args, summary, card)
-    payload.update(_sign_if_needed(args.secret))
+    payload.update(_sign_if_needed(secret))
 
-    if not args.webhook:
-        log(logger, logging.INFO, "feishu_skip_missing_webhook")
+    if not webhook:
+        log(logger, logging.INFO, "feishu_skip_missing_webhook", channel=channel)
         return 0
 
-    resp = requests.post(args.webhook, json=payload, timeout=10)
+    resp = requests.post(webhook, json=payload, timeout=10)
     if resp.status_code != 200:
         log(
             logger,
@@ -122,6 +157,7 @@ def run(argv: list[str] | None = None) -> int:
         logger,
         logging.INFO,
         "feishu_push_completed",
+        channel=channel,
         mode=args.mode,
         has_card=bool(card),
         summary_length=len(summary.splitlines()),

@@ -25,7 +25,11 @@ def test_run_without_webhook_skips(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(post_feishu.requests, "post", fake_post)
     monkeypatch.delenv("FEISHU_WEBHOOK", raising=False)
+    monkeypatch.delenv("FEISHU_WEBHOOK_DAILY", raising=False)
+    monkeypatch.delenv("FEISHU_WEBHOOK_ALERTS", raising=False)
     monkeypatch.delenv("FEISHU_SECRET", raising=False)
+    monkeypatch.delenv("FEISHU_SECRET_DAILY", raising=False)
+    monkeypatch.delenv("FEISHU_SECRET_ALERTS", raising=False)
 
     exit_code = post_feishu.run([])
 
@@ -102,3 +106,28 @@ def test_run_defaults_to_post_when_card_missing(tmp_path: Path, monkeypatch: pyt
     assert captured["payload"]["msg_type"] == "post"
     content_blocks = captured["payload"]["content"]["post"]["zh_cn"]["content"]
     assert any("AI 总分 60" in block[0]["text"] for block in content_blocks)
+
+
+def test_channel_alerts_reads_dedicated_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict = {}
+
+    def fake_post(url: str, json: dict | None = None, timeout: int | None = None):
+        captured["url"] = url
+        captured["payload"] = json
+        captured["timeout"] = timeout
+        return DummyResponse()
+
+    monkeypatch.setattr(post_feishu.requests, "post", fake_post)
+    monkeypatch.setenv("FEISHU_WEBHOOK_ALERTS", "https://example.com/alerts")
+    monkeypatch.setenv("FEISHU_SECRET_ALERTS", "alert-secret")
+    summary_path = tmp_path / "summary.txt"
+    summary_path.write_text("盘中提示", encoding="utf-8")
+
+    exit_code = post_feishu.run(
+        ["--channel", "alerts", "--summary", str(summary_path), "--mode", "post"]
+    )
+
+    assert exit_code == 0
+    assert captured["url"] == "https://example.com/alerts"

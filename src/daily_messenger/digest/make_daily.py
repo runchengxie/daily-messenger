@@ -261,8 +261,30 @@ def run(argv: List[str] | None = None) -> int:
 
     scores = _load_json(OUT_DIR / "scores.json")
     actions_payload = _load_json(OUT_DIR / "actions.json")
-    raw_market_payload = _load_json(OUT_DIR / "raw_market.json")
-    raw_events_payload = _load_json(OUT_DIR / "raw_events.json")
+    try:
+        raw_market_payload = _load_json(OUT_DIR / "raw_market.json")
+    except FileNotFoundError:
+        missing_path = OUT_DIR / "raw_market.json"
+        log(
+            logger,
+            logging.WARNING,
+            "digest_missing_input",
+            input="raw_market",
+            path=str(missing_path),
+        )
+        raw_market_payload = {}
+    try:
+        raw_events_payload = _load_json(OUT_DIR / "raw_events.json")
+    except FileNotFoundError:
+        missing_path = OUT_DIR / "raw_events.json"
+        log(
+            logger,
+            logging.WARNING,
+            "digest_missing_input",
+            input="raw_events",
+            path=str(missing_path),
+        )
+        raw_events_payload = {}
 
     degraded = bool(scores.get("degraded")) or args.degraded
     date_str = scores.get("date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))

@@ -98,9 +98,25 @@ class ActionPayload:
         return {"action": self.action, "name": self.name, "reason": self.reason}
 
 
-def _load_json(path: Path) -> Dict[str, object]:
+def _load_json(path: Path, *, required: bool = True) -> Dict[str, object]:
+    """Load a JSON document from *path*.
+
+    Args:
+        path: Location of the JSON payload.
+        required: When ``False`` the function returns an empty mapping if the
+            file is absent instead of raising ``FileNotFoundError``. This keeps
+            optional inputs from aborting the digest run during local
+            development and tests where only a subset of artefacts are
+            generated.
+
+    Raises:
+        FileNotFoundError: If the file is missing and ``required`` is ``True``.
+    """
+
     if not path.exists():
-        raise FileNotFoundError(f"缺少输入文件: {path}")
+        if required:
+            raise FileNotFoundError(f"缺少输入文件: {path}")
+        return {}
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -261,28 +277,28 @@ def run(argv: List[str] | None = None) -> int:
 
     scores = _load_json(OUT_DIR / "scores.json")
     actions_payload = _load_json(OUT_DIR / "actions.json")
-    try:
-        raw_market_payload = _load_json(OUT_DIR / "raw_market.json")
-    except FileNotFoundError:
-        missing_path = OUT_DIR / "raw_market.json"
+    raw_market_path = OUT_DIR / "raw_market.json"
+    if raw_market_path.exists():
+        raw_market_payload = _load_json(raw_market_path)
+    else:
         log(
             logger,
             logging.WARNING,
             "digest_missing_input",
             input="raw_market",
-            path=str(missing_path),
+            path=str(raw_market_path),
         )
         raw_market_payload = {}
-    try:
-        raw_events_payload = _load_json(OUT_DIR / "raw_events.json")
-    except FileNotFoundError:
-        missing_path = OUT_DIR / "raw_events.json"
+    raw_events_path = OUT_DIR / "raw_events.json"
+    if raw_events_path.exists():
+        raw_events_payload = _load_json(raw_events_path)
+    else:
         log(
             logger,
             logging.WARNING,
             "digest_missing_input",
             input="raw_events",
-            path=str(missing_path),
+            path=str(raw_events_path),
         )
         raw_events_payload = {}
 

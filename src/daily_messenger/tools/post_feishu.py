@@ -80,14 +80,8 @@ def _resolve_credentials(
         return explicit_webhook, explicit_secret
 
     suffix = channel.upper()
-    channel_webhook = os.getenv(f"FEISHU_WEBHOOK_{suffix}")
-    channel_secret = os.getenv(f"FEISHU_SECRET_{suffix}")
-
-    fallback_webhook = os.getenv("FEISHU_WEBHOOK")
-    fallback_secret = os.getenv("FEISHU_SECRET")
-
-    webhook = channel_webhook or fallback_webhook
-    secret = explicit_secret or channel_secret or fallback_secret
+    webhook = os.getenv(f"FEISHU_WEBHOOK_{suffix}")
+    secret = explicit_secret or os.getenv(f"FEISHU_SECRET_{suffix}")
     return webhook, secret
 
 

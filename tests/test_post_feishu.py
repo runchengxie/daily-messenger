@@ -24,10 +24,8 @@ def test_run_without_webhook_skips(monkeypatch: pytest.MonkeyPatch) -> None:
         return DummyResponse()
 
     monkeypatch.setattr(post_feishu.requests, "post", fake_post)
-    monkeypatch.delenv("FEISHU_WEBHOOK", raising=False)
     monkeypatch.delenv("FEISHU_WEBHOOK_DAILY", raising=False)
     monkeypatch.delenv("FEISHU_WEBHOOK_ALERTS", raising=False)
-    monkeypatch.delenv("FEISHU_SECRET", raising=False)
     monkeypatch.delenv("FEISHU_SECRET_DAILY", raising=False)
     monkeypatch.delenv("FEISHU_SECRET_ALERTS", raising=False)
 

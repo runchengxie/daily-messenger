@@ -58,7 +58,7 @@ flowchart TD
     J & Jd -->|输出| Ko[out/index.html<br/>out/YYYY-MM-DD.html<br/>out/digest_summary.txt<br/>out/digest_card.json]
     Ko --> L[上传 Pages 产物]
     L --> M[部署到 GitHub Pages]
-    Ko --> N{存在 FEISHU_WEBHOOK?}
+    Ko --> N{存在 FEISHU_WEBHOOK_DAILY?}
     N -- 是 --> O[推送飞书卡片<br/>src/daily_messenger/tools/post_feishu.py]
     N -- 否 --> P[跳过飞书推送<br/>不中断流水线]
     Jd --> Q[CI 标记失败<br/>exit 1]
@@ -414,7 +414,7 @@ options:
 
 ## 飞书推送
 
-> 缺少对应频道的 Webhook（`FEISHU_WEBHOOK_DAILY` / `FEISHU_WEBHOOK_ALERTS`，或历史兼容变量 `FEISHU_WEBHOOK`）时脚本会记录告警并以 0 退出码收尾，不会阻断 CI。
+> 缺少对应频道的 Webhook（`FEISHU_WEBHOOK_DAILY` / `FEISHU_WEBHOOK_ALERTS`）时脚本会记录告警并以 0 退出码收尾，不会阻断 CI。
 
 ```bash
 export FEISHU_WEBHOOK_DAILY=https://open.feishu.cn/xxx
@@ -435,7 +435,7 @@ uv run python -m daily_messenger.tools.post_feishu \
   --summary out/alerts_snapshot.txt
 ```
 
-* 如未显式指定 `--webhook` / `--secret`，脚本将按 `channel` 读取 `FEISHU_WEBHOOK_<CHANNEL>` 与 `FEISHU_SECRET_<CHANNEL>`，再回退到历史变量 `FEISHU_WEBHOOK` / `FEISHU_SECRET`。
+* 如未显式指定 `--webhook` / `--secret`，脚本将按 `channel` 读取 `FEISHU_WEBHOOK_<CHANNEL>` 与 `FEISHU_SECRET_<CHANNEL>`。
 * 仍可直接运行 `uv run python -m daily_messenger.tools.post_feishu`，若 `out/digest_card.json` 存在则发送互动卡片，否则退化到 `post` 模式；缺少 Webhook 时安全跳过。
 
 ## XAU/USD 技术分析报告
@@ -453,7 +453,7 @@ uv run python -m daily_messenger.digest.ta_report --config config/ta_xau.yml
 推荐频率：
 
 - **日报（D）**：纽约 17:00 切日后生成完整报告，进入日报/小时频道。
-- **小时（H1）**：视需求追加轻量更新，可合并在日报频道内。
+- **小时（H1）**：提供盘中轻量快照，默认与 M5 一样推送至 `alerts` 频道，配合去重与节流避免刷屏。
 - **触发/5 分钟（M5）**：仅推送告警至 `alerts` 频道，结合 Feishu 双 Webhook 做节流与静音。
 
 提示：OANDA 返回的 volume 是 tick 计数，适用于波动度评估，不等同于交易所成交量。生产环境请根据需要替换为正式实时数据源。
@@ -469,7 +469,7 @@ uv run python -m daily_messenger.digest.ta_report --config config/ta_xau.yml
 ## 故障排查指南
 
 * **缺少 `API_KEYS`**：流水线会自动进入降级模式，模拟数据会在网页与摘要顶部加粗提示，同时 `out/etl_status.json.ok=false` 与 `run_meta.json` 中的 `degraded=true`。如需验证真实接口，可在本地导入最小化凭证并重新执行。
-* **未配置飞书 Webhook**：当目标频道 (`FEISHU_WEBHOOK_DAILY` / `FEISHU_WEBHOOK_ALERTS` 或历史兼容变量 `FEISHU_WEBHOOK`) 缺失时，推送脚本会安全跳过并返回 0，同时记录 `feishu_skip_no_webhook` 事件，不会阻断 CI。
+* **未配置飞书 Webhook**：当目标频道 (`FEISHU_WEBHOOK_DAILY` / `FEISHU_WEBHOOK_ALERTS`) 缺失时，推送脚本会安全跳过并返回 0，同时记录 `feishu_skip_no_webhook` 事件，不会阻断 CI。
 * **如何定位缺失字段**：结构化日志输出在 `out/run_meta.json` 中可按步骤查状态；产物契约失配时，请对照下文“产物契约”示例，同时运行 `pytest -k contract` 触发合同测试以获得具体断言。
 
 ## 测试与质量保障
@@ -516,7 +516,7 @@ uv run ruff check .  # 可加 --fix 自动修复
 
   * 即使降级输出仍会上传 `out/` 到 GitHub Pages，并在最后一步根据 ETL/评分状态决定是否 `exit 1`。
 
-  * 如配置了 `FEISHU_WEBHOOK`，会在部署后推送最新卡片；缺失凭证则跳过且不中断流程。
+  * 如配置了 `FEISHU_WEBHOOK_DAILY`，会在部署后推送最新卡片；缺失凭证则跳过且不中断流程。
 
 * 支持 `workflow_dispatch` 手动触发；调试时可检查 `run_meta.json` 与结构化日志定位问题。
 

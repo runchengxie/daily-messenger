@@ -21,8 +21,10 @@ jobs:
   run:
     runs-on: ubuntu-latest
     env:
-      FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
-      FEISHU_SECRET: ${{ secrets.FEISHU_SECRET }}
+      FEISHU_WEBHOOK_DAILY: ${{ secrets.FEISHU_WEBHOOK_DAILY }}
+      FEISHU_SECRET_DAILY: ${{ secrets.FEISHU_SECRET_DAILY }}
+      FEISHU_WEBHOOK_ALERTS: ${{ secrets.FEISHU_WEBHOOK_ALERTS }}
+      FEISHU_SECRET_ALERTS: ${{ secrets.FEISHU_SECRET_ALERTS }}
       EDGAR_USER_AGENT: "daily-messenger/1.0 (mailto:xieruncheng@gmail.com)"
     steps:
       - name: Checkout
@@ -141,11 +143,10 @@ jobs:
         uses: actions/deploy-pages@v4
 
       - name: Push Feishu card
-        if: ${{ always() && env.FEISHU_WEBHOOK != '' }}
+        if: ${{ always() && env.FEISHU_WEBHOOK_DAILY != '' }}
         run: |
           uv run python -m daily_messenger.tools.post_feishu \
-            --webhook "$FEISHU_WEBHOOK" \
-            --secret "$FEISHU_SECRET" \
+            --channel daily \
             --summary out/digest_summary.txt \
             --card out/digest_card.json
 

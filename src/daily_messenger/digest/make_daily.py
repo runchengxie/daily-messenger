@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Render HTML report, plain-text digest, and Feishu card payload."""
+
 from __future__ import annotations
 
 import argparse
@@ -14,7 +15,13 @@ from typing import Any, Dict, List, Mapping
 from daily_messenger.common import run_meta
 from daily_messenger.common.logging import log, setup_logger
 
-from jinja2 import ChoiceLoader, Environment, FileSystemLoader, PackageLoader, select_autoescape
+from jinja2 import (
+    ChoiceLoader,
+    Environment,
+    FileSystemLoader,
+    PackageLoader,
+    select_autoescape,
+)
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -60,12 +67,21 @@ class ThemePayload:
                     continue
         detail_raw = data.get("breakdown_detail", {})
         if isinstance(detail_raw, Mapping):
-            detail = {str(k): dict(v) for k, v in detail_raw.items() if isinstance(v, Mapping)}
+            detail = {
+                str(k): dict(v) for k, v in detail_raw.items() if isinstance(v, Mapping)
+            }
         else:
             detail = {}
         meta_raw = data.get("meta")
         meta = dict(meta_raw) if isinstance(meta_raw, Mapping) else {}
-        return cls(name=name, label=label, total=total, breakdown=breakdown, breakdown_detail=detail, meta=meta)
+        return cls(
+            name=name,
+            label=label,
+            total=total,
+            breakdown=breakdown,
+            breakdown_detail=detail,
+            meta=meta,
+        )
 
     def to_mapping(self) -> Dict[str, object]:
         return {
@@ -161,7 +177,9 @@ def _render_report(env: Environment, payload: Dict[str, object]) -> str:
     return template.render(**payload)
 
 
-def _filter_future_events(events: List[Dict[str, object]], today: date) -> List[Dict[str, object]]:
+def _filter_future_events(
+    events: List[Dict[str, object]], today: date
+) -> List[Dict[str, object]]:
     future: List[Dict[str, object]] = []
     for entry in events:
         if not isinstance(entry, dict):
@@ -183,7 +201,9 @@ def _filter_future_events(events: List[Dict[str, object]], today: date) -> List[
     return future[:20]
 
 
-def _build_summary_lines(themes: List[Dict[str, object]], actions: List[Dict[str, str]], degraded: bool) -> List[str]:
+def _build_summary_lines(
+    themes: List[Dict[str, object]], actions: List[Dict[str, str]], degraded: bool
+) -> List[str]:
     lines = []
     if degraded:
         lines.append("⚠️ 数据延迟，以下为中性参考。")
@@ -215,7 +235,9 @@ def _build_summary_lines(themes: List[Dict[str, object]], actions: List[Dict[str
         lines.append(line)
     if actions:
         for action in actions:
-            lines.append(f"操作：{action['action']} {action['name']}（{action['reason']}）")
+            lines.append(
+                f"操作：{action['action']} {action['name']}（{action['reason']}）"
+            )
     return lines[:12]
 
 
@@ -241,7 +263,12 @@ def _build_card_payload(
     if stock_preview:
         preview_chunks.append("**成分股** " + " ｜ ".join(stock_preview))
     if preview_chunks:
-        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(preview_chunks)}})
+        elements.append(
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": "\n".join(preview_chunks)},
+            }
+        )
 
     elements.append(
         {
@@ -323,7 +350,9 @@ def run(argv: List[str] | None = None) -> int:
         if isinstance(raw_sources, list):
             etl_sources = [src for src in raw_sources if isinstance(src, dict)]
     sentiment_candidate = scores.get("sentiment")
-    sentiment_detail = sentiment_candidate if isinstance(sentiment_candidate, dict) else None
+    sentiment_detail = (
+        sentiment_candidate if isinstance(sentiment_candidate, dict) else None
+    )
     thresholds_candidate = scores.get("thresholds", {})
     thresholds = thresholds_candidate if isinstance(thresholds_candidate, dict) else {}
 
@@ -331,15 +360,27 @@ def run(argv: List[str] | None = None) -> int:
     if isinstance(theme_details_candidate, Mapping):
         theme_details = dict(theme_details_candidate)
     else:
-        market_node = raw_market_payload.get("market", {}) if isinstance(raw_market_payload, Mapping) else {}
-        details_node = market_node.get("themes") if isinstance(market_node, Mapping) else {}
+        market_node = (
+            raw_market_payload.get("market", {})
+            if isinstance(raw_market_payload, Mapping)
+            else {}
+        )
+        details_node = (
+            market_node.get("themes") if isinstance(market_node, Mapping) else {}
+        )
         theme_details = dict(details_node) if isinstance(details_node, Mapping) else {}
 
     ai_updates_candidate = scores.get("ai_updates")
     if isinstance(ai_updates_candidate, list):
-        ai_updates = [item for item in ai_updates_candidate if isinstance(item, Mapping)]
+        ai_updates = [
+            item for item in ai_updates_candidate if isinstance(item, Mapping)
+        ]
     else:
-        candidate = raw_events_payload.get("ai_updates") if isinstance(raw_events_payload, Mapping) else []
+        candidate = (
+            raw_events_payload.get("ai_updates")
+            if isinstance(raw_events_payload, Mapping)
+            else []
+        )
         if not isinstance(candidate, list):
             candidate = []
         ai_updates = [item for item in candidate if isinstance(item, Mapping)]
@@ -358,13 +399,19 @@ def run(argv: List[str] | None = None) -> int:
         preferred_order = ["magnificent7", "ai", "btc"]
         selected_detail: Mapping[str, Any] | None = None
         for key in preferred_order:
-            detail_candidate = theme_details.get(key) if isinstance(theme_details, Mapping) else None
-            if isinstance(detail_candidate, Mapping) and detail_candidate.get("symbols"):
+            detail_candidate = (
+                theme_details.get(key) if isinstance(theme_details, Mapping) else None
+            )
+            if isinstance(detail_candidate, Mapping) and detail_candidate.get(
+                "symbols"
+            ):
                 selected_detail = detail_candidate
                 break
         if selected_detail is None:
             for detail_candidate in theme_details.values():
-                if isinstance(detail_candidate, Mapping) and detail_candidate.get("symbols"):
+                if isinstance(detail_candidate, Mapping) and detail_candidate.get(
+                    "symbols"
+                ):
                     selected_detail = detail_candidate
                     break
         if selected_detail:
@@ -379,7 +426,9 @@ def run(argv: List[str] | None = None) -> int:
                         except (TypeError, ValueError):
                             change_float = 0.0
                         sortable.append((abs(change_float), item))
-                for _, item in sorted(sortable, key=lambda pair: pair[0], reverse=True)[:3]:
+                for _, item in sorted(sortable, key=lambda pair: pair[0], reverse=True)[
+                    :3
+                ]:
                     symbol = item.get("symbol")
                     if not symbol:
                         continue
@@ -430,7 +479,9 @@ def run(argv: List[str] | None = None) -> int:
     dated_report_path.write_text(html, encoding="utf-8")
     (OUT_DIR / "index.html").write_text(html, encoding="utf-8")
 
-    summary_lines = _build_summary_lines(payload["themes"], payload["actions"], degraded)
+    summary_lines = _build_summary_lines(
+        payload["themes"], payload["actions"], degraded
+    )
     summary_text = "\n".join(summary_lines)
     if summary_text:
         summary_text += "\n"
@@ -448,7 +499,9 @@ def run(argv: List[str] | None = None) -> int:
         news_preview=news_preview,
         stock_preview=stock_preview,
     )
-    (OUT_DIR / "digest_card.json").write_text(json.dumps(card_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    (OUT_DIR / "digest_card.json").write_text(
+        json.dumps(card_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     duration = (datetime.now(timezone.utc) - started_at).total_seconds()
     log(
@@ -462,7 +515,12 @@ def run(argv: List[str] | None = None) -> int:
         card_path=str(OUT_DIR / "digest_card.json"),
     )
     if degraded:
-        log(logger, logging.WARNING, "digest_degraded_output", reason="degraded flag or downstream status")
+        log(
+            logger,
+            logging.WARNING,
+            "digest_degraded_output",
+            reason="degraded flag or downstream status",
+        )
     run_meta.record_step(
         OUT_DIR,
         "digest",

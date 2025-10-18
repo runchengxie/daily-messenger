@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Derive scores and action recommendations from raw ETL output."""
+
 from __future__ import annotations
 
 import argparse
@@ -103,7 +104,9 @@ def _scale(value: float, midpoint: float = 0.0, sensitivity: float = 15.0) -> fl
     return max(0.0, min(100.0, score))
 
 
-def _inverse_ratio_score(value: float | None, baseline: float, sensitivity: float) -> float:
+def _inverse_ratio_score(
+    value: float | None, baseline: float, sensitivity: float
+) -> float:
     if value is None or value <= 0:
         return 50.0
     ratio = baseline / value
@@ -145,7 +148,9 @@ def _make_detail(
     return detail
 
 
-def _append_history(history: Dict[str, List[float]], key: str, value: float | None, limit: int) -> None:
+def _append_history(
+    history: Dict[str, List[float]], key: str, value: float | None, limit: int
+) -> None:
     if value is None:
         return
     series = history.setdefault(key, [])
@@ -169,7 +174,9 @@ def _score_ai(
     perf_source = "主题行情"
     ai_perf = theme_ai.get("performance")
     if ai_perf is None:
-        fallback_sector = next((s.get("performance") for s in sectors if s.get("name") == "AI"), None)
+        fallback_sector = next(
+            (s.get("performance") for s in sectors if s.get("name") == "AI"), None
+        )
         if fallback_sector is not None:
             perf_source = "板块代理"
             ai_perf = fallback_sector
@@ -178,7 +185,14 @@ def _score_ai(
             ai_perf = 1.0
     index_change = theme_ai.get("change_pct")
     if index_change is None:
-        index_change = next((i.get("change_pct") for i in market.get("indices", []) if i.get("symbol") == "NDX"), 0.0)
+        index_change = next(
+            (
+                i.get("change_pct")
+                for i in market.get("indices", [])
+                if i.get("symbol") == "NDX"
+            ),
+            0.0,
+        )
     avg_pe = theme_ai.get("avg_pe") if isinstance(theme_ai, dict) else None
     avg_ps = theme_ai.get("avg_ps") if isinstance(theme_ai, dict) else None
 
@@ -197,14 +211,18 @@ def _score_ai(
         source=perf_source,
         raw=ai_perf,
     )
-    valuation_missing = avg_pe is None or (isinstance(avg_pe, (int, float)) and avg_pe <= 0)
+    valuation_missing = avg_pe is None or (
+        isinstance(avg_pe, (int, float)) and avg_pe <= 0
+    )
     breakdown_detail["valuation"] = _make_detail(
         breakdown["valuation"],
         fallback=valuation_missing,
         reason="缺少平均 PE，使用中性值" if valuation_missing else None,
         raw=avg_pe,
     )
-    liquidity_missing = avg_ps is None or (isinstance(avg_ps, (int, float)) and avg_ps <= 0)
+    liquidity_missing = avg_ps is None or (
+        isinstance(avg_ps, (int, float)) and avg_ps <= 0
+    )
     breakdown_detail["liquidity"] = _make_detail(
         breakdown["liquidity"],
         fallback=liquidity_missing,
@@ -216,7 +234,9 @@ def _score_ai(
         fallback=sentiment_fallback,
         reason="情绪数据缺口，使用中性值" if sentiment_fallback else None,
     )
-    breakdown_detail["event"] = _make_detail(breakdown["event"], fallback=False, source="配置")
+    breakdown_detail["event"] = _make_detail(
+        breakdown["event"], fallback=False, source="配置"
+    )
 
     total = sum(weights.get(k, 0.0) * breakdown[k] for k in breakdown)
     return ThemeScore(
@@ -319,21 +339,27 @@ def _score_magnificent7(
         "event": 68.0,
     }
     breakdown_detail: Dict[str, Dict[str, object]] = {}
-    fundamental_missing = market_cap is None or (isinstance(market_cap, (int, float)) and market_cap <= 0)
+    fundamental_missing = market_cap is None or (
+        isinstance(market_cap, (int, float)) and market_cap <= 0
+    )
     breakdown_detail["fundamental"] = _make_detail(
         breakdown["fundamental"],
         fallback=fundamental_missing,
         reason="缺少总市值，使用中性值" if fundamental_missing else None,
         raw=market_cap,
     )
-    valuation_missing = avg_pe is None or (isinstance(avg_pe, (int, float)) and avg_pe <= 0)
+    valuation_missing = avg_pe is None or (
+        isinstance(avg_pe, (int, float)) and avg_pe <= 0
+    )
     breakdown_detail["valuation"] = _make_detail(
         breakdown["valuation"],
         fallback=valuation_missing,
         reason="缺少平均 PE，使用中性值" if valuation_missing else None,
         raw=avg_pe,
     )
-    liquidity_missing = avg_ps is None or (isinstance(avg_ps, (int, float)) and avg_ps <= 0)
+    liquidity_missing = avg_ps is None or (
+        isinstance(avg_ps, (int, float)) and avg_ps <= 0
+    )
     breakdown_detail["liquidity"] = _make_detail(
         breakdown["liquidity"],
         fallback=liquidity_missing,
@@ -345,7 +371,9 @@ def _score_magnificent7(
         fallback=sentiment_fallback,
         reason="情绪数据缺口，使用中性值" if sentiment_fallback else None,
     )
-    breakdown_detail["event"] = _make_detail(breakdown["event"], fallback=False, source="配置")
+    breakdown_detail["event"] = _make_detail(
+        breakdown["event"], fallback=False, source="配置"
+    )
     total = sum(weights.get(k, 0.0) * breakdown[k] for k in breakdown)
     return ThemeScore(
         name="magnificent7",
@@ -358,30 +386,40 @@ def _score_magnificent7(
     )
 
 
-def _build_actions(themes: List[ThemeScore], thresholds: Dict[str, float]) -> List[Dict[str, str]]:
+def _build_actions(
+    themes: List[ThemeScore], thresholds: Dict[str, float]
+) -> List[Dict[str, str]]:
     actions: List[Dict[str, str]] = []
     for theme in themes:
         if theme.degraded:
-            actions.append({
-                "name": theme.label,
-                "action": "观察",
-                "reason": "数据降级，保持中性"})
+            actions.append(
+                {"name": theme.label, "action": "观察", "reason": "数据降级，保持中性"}
+            )
             continue
         if theme.total >= thresholds.get("action_add", 75):
-            actions.append({
-                "name": theme.label,
-                "action": "增持",
-                "reason": f"总分 {theme.total:.0f} 高于增持阈值"})
+            actions.append(
+                {
+                    "name": theme.label,
+                    "action": "增持",
+                    "reason": f"总分 {theme.total:.0f} 高于增持阈值",
+                }
+            )
         elif theme.total <= thresholds.get("action_trim", 45):
-            actions.append({
-                "name": theme.label,
-                "action": "减持",
-                "reason": f"总分 {theme.total:.0f} 低于减持阈值"})
+            actions.append(
+                {
+                    "name": theme.label,
+                    "action": "减持",
+                    "reason": f"总分 {theme.total:.0f} 低于减持阈值",
+                }
+            )
         else:
-            actions.append({
-                "name": theme.label,
-                "action": "观察",
-                "reason": f"总分 {theme.total:.0f} 处于中性区间"})
+            actions.append(
+                {
+                    "name": theme.label,
+                    "action": "观察",
+                    "reason": f"总分 {theme.total:.0f} 处于中性区间",
+                }
+            )
     return actions
 
 
@@ -393,7 +431,9 @@ def _save_json(path: Path, payload: Dict[str, object]) -> None:
 
 def run(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Compute theme scores")
-    parser.add_argument("--force", action="store_true", help="忽略幂等标记，强制重新计算")
+    parser.add_argument(
+        "--force", action="store_true", help="忽略幂等标记，强制重新计算"
+    )
     args = parser.parse_args(argv)
 
     logger = setup_logger("scoring")
@@ -402,7 +442,9 @@ def run(argv: List[str] | None = None) -> int:
     trading_day = _current_trading_day()
     logger = setup_logger("scoring", trading_day=trading_day)
     log(logger, logging.INFO, "scoring_start", force=args.force)
-    run_meta.record_step(OUT_DIR, "scoring", "started", trading_day=trading_day, force=args.force)
+    run_meta.record_step(
+        OUT_DIR, "scoring", "started", trading_day=trading_day, force=args.force
+    )
 
     state_path = STATE_DIR / f"done_{trading_day}"
 
@@ -466,7 +508,10 @@ def run(argv: List[str] | None = None) -> int:
         existing_history = {}
 
     history: Dict[str, List[float]] = {}
-    for key, limit in (("put_call_equity", PUT_CALL_HISTORY_LIMIT), ("aaii_bull_bear_spread", AAII_HISTORY_LIMIT)):
+    for key, limit in (
+        ("put_call_equity", PUT_CALL_HISTORY_LIMIT),
+        ("aaii_bull_bear_spread", AAII_HISTORY_LIMIT),
+    ):
         raw_values = existing_history.get(key)
         series: List[float] = []
         if isinstance(raw_values, list):
@@ -480,13 +525,19 @@ def run(argv: List[str] | None = None) -> int:
         put_call = sentiment_node.get("put_call")
         if isinstance(put_call, dict):
             equity_value = _coerce_float(put_call.get("equity"))
-            _append_history(history, "put_call_equity", equity_value, PUT_CALL_HISTORY_LIMIT)
+            _append_history(
+                history, "put_call_equity", equity_value, PUT_CALL_HISTORY_LIMIT
+            )
         aaii = sentiment_node.get("aaii")
         if isinstance(aaii, dict):
             spread_value = _coerce_float(aaii.get("bull_bear_spread"))
-            _append_history(history, "aaii_bull_bear_spread", spread_value, AAII_HISTORY_LIMIT)
+            _append_history(
+                history, "aaii_bull_bear_spread", spread_value, AAII_HISTORY_LIMIT
+            )
 
-    sentiment_result = sentiment_adaptor.aggregate(sentiment_node, history) if sentiment_node else None
+    sentiment_result = (
+        sentiment_adaptor.aggregate(sentiment_node, history) if sentiment_node else None
+    )
 
     sentiment_available = sentiment_result is not None
     sentiment_score_value = sentiment_result.score if sentiment_result else 50.0
@@ -506,7 +557,9 @@ def run(argv: List[str] | None = None) -> int:
     funding_rate_raw = _coerce_float(btc_payload.get("funding_rate", 0.0))
     btc_sentiment_fallback = funding_rate_raw is None
     funding_rate_for_score = funding_rate_raw if funding_rate_raw is not None else 0.0
-    btc_sentiment_value = _scale(funding_rate_for_score, midpoint=0.005, sensitivity=600)
+    btc_sentiment_value = _scale(
+        funding_rate_for_score, midpoint=0.005, sensitivity=600
+    )
     theme_btc = _score_btc(
         btc_payload,
         theme_btc_weights,
@@ -573,7 +626,11 @@ def run(argv: List[str] | None = None) -> int:
             meta["distance_to_trim"] = round(theme.total - trim_threshold, 2)
         theme.meta = meta
 
-        updated_entries = [entry for entry in entries if isinstance(entry, dict) and entry.get("date") != trading_day]
+        updated_entries = [
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("date") != trading_day
+        ]
         updated_entries.append({"date": trading_day, "total": round(theme.total, 2)})
         themes_history[theme.name] = updated_entries[-30:]
 

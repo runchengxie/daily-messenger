@@ -1,4 +1,5 @@
 """Fetch Cboe daily put/call ratios."""
+
 from __future__ import annotations
 
 import csv
@@ -11,7 +12,10 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import requests
 from zoneinfo import ZoneInfo
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
 REQUEST_TIMEOUT = 15
 EXCHANGE_TZ = ZoneInfo("America/Chicago")
 
@@ -23,7 +27,9 @@ CSV_SOURCES: Dict[str, str] = {
 }
 
 MARKET_SUMMARY_URL = "https://www.cboe.com/us/options/market_statistics/"
-TOTAL_PATTERN = re.compile(r"Total[^<]*P/C\s*RATIO[^0-9]*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE | re.DOTALL)
+TOTAL_PATTERN = re.compile(
+    r"Total[^<]*P/C\s*RATIO[^0-9]*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE | re.DOTALL
+)
 
 
 @dataclass
@@ -83,7 +89,9 @@ def _latest_csv_row(content: str) -> Tuple[str, float]:
     return latest_date.isoformat(), latest_ratio
 
 
-def _fetch_csv_ratios(session: requests.Session) -> Tuple[Dict[str, float], Optional[str], List[str]]:
+def _fetch_csv_ratios(
+    session: requests.Session,
+) -> Tuple[Dict[str, float], Optional[str], List[str]]:
     ratios: Dict[str, float] = {}
     dates: List[str] = []
     errors: List[str] = []
@@ -136,7 +144,9 @@ def fetch() -> Tuple[Dict[str, Dict[str, object]], FetchStatus]:
     payload: Dict[str, Dict[str, object]] = {
         "put_call": {
             "as_of_exchange_tz": EXCHANGE_TZ.key,
-            "as_of_utc": now_ct.astimezone(ZoneInfo("UTC")).isoformat().replace("+00:00", "Z"),
+            "as_of_utc": now_ct.astimezone(ZoneInfo("UTC"))
+            .isoformat()
+            .replace("+00:00", "Z"),
             "source": "cboe_volume_put_call_csv",
         }
     }

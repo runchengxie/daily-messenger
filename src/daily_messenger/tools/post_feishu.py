@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Send Feishu notification using incoming webhook."""
+
 from __future__ import annotations
 
 import argparse
@@ -39,7 +40,9 @@ def _sign_if_needed(secret: str | None) -> Dict[str, str]:
     return {"timestamp": timestamp, "sign": sign}
 
 
-def _build_payload(args: argparse.Namespace, summary: str, card: str | None) -> Dict[str, Any]:
+def _build_payload(
+    args: argparse.Namespace, summary: str, card: str | None
+) -> Dict[str, Any]:
     if args.mode == "interactive":
         if not card:
             raise ValueError("需要提供 --card 文件以发送互动卡片")
@@ -53,7 +56,9 @@ def _build_payload(args: argparse.Namespace, summary: str, card: str | None) -> 
             "post": {
                 "zh_cn": {
                     "title": args.title or "内参播报",
-                    "content": [[{"tag": "text", "text": line + "\n"}] for line in zh_lines],
+                    "content": [
+                        [{"tag": "text", "text": line + "\n"}] for line in zh_lines
+                    ],
                 }
             }
         },
@@ -91,8 +96,12 @@ def run(argv: list[str] | None = None) -> int:
 
     base_dir = _P(__file__).resolve().parents[3]
     out_dir = base_dir / "out"
-    parser.add_argument("--channel", default="daily", help="消息频道（daily 或 alerts）")
-    parser.add_argument("--webhook", help="飞书自定义机器人 Webhook（覆盖 channel 推断）")
+    parser.add_argument(
+        "--channel", default="daily", help="消息频道（daily 或 alerts）"
+    )
+    parser.add_argument(
+        "--webhook", help="飞书自定义机器人 Webhook（覆盖 channel 推断）"
+    )
     parser.add_argument(
         "--summary",
         default=str(out_dir / "digest_summary.txt"),
@@ -142,7 +151,11 @@ def run(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+    body = (
+        resp.json()
+        if resp.headers.get("content-type", "").startswith("application/json")
+        else {}
+    )
     if body.get("StatusCode", 0) != 0:
         log(logger, logging.ERROR, "feishu_business_error", response=body)
         return 1

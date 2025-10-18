@@ -63,9 +63,7 @@ def main():
         quote = data[0]
     except Exception as e:
         print(f"[WARN] stable/quote 失败: {e}")
-        data = http_get(
-            session, f"{base}/api/v3/quote-short/{symbol}", {"apikey": key}
-        )
+        data = http_get(session, f"{base}/api/v3/quote-short/{symbol}", {"apikey": key})
         quote_source = "api/v3/quote-short"
         if not isinstance(data, list) or not data:
             raise RuntimeError("quote-short 返回空")

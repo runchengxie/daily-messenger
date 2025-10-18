@@ -43,10 +43,18 @@ def test_cboe_fetch_parses_ratios(monkeypatch: pytest.MonkeyPatch) -> None:
     base = "DATE,CALL,PUT,TOTAL,P/C Ratio\n10/10/2024,100,80,180,0.77\n"
     responses = {
         "https://www.cboe.com": _DummyResponse("ok"),
-        "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv": _DummyResponse(base),
-        "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/indexpc.csv": _DummyResponse(base.replace("0.77", "1.25")),
-        "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/spxpc.csv": _DummyResponse(base.replace("0.77", "1.11")),
-        "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/vixpc.csv": _DummyResponse(base.replace("0.77", "0.42")),
+        "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv": _DummyResponse(
+            base
+        ),
+        "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/indexpc.csv": _DummyResponse(
+            base.replace("0.77", "1.25")
+        ),
+        "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/spxpc.csv": _DummyResponse(
+            base.replace("0.77", "1.11")
+        ),
+        "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/vixpc.csv": _DummyResponse(
+            base.replace("0.77", "0.42")
+        ),
     }
 
     dummy_session = _DummySession(responses)
@@ -94,7 +102,9 @@ def test_aaii_fetch_parses_latest_row(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     responses = {
         aaii_sentiment.RSS_URL: _DummyResponse(rss),
-        "https://insights.aaii.com/p/october-10-2024-aaii-sentiment": _DummyResponse(html),
+        "https://insights.aaii.com/p/october-10-2024-aaii-sentiment": _DummyResponse(
+            html
+        ),
     }
 
     dummy_session = _DummySession(responses)
@@ -113,7 +123,10 @@ def test_sentiment_adaptor_combines_sources() -> None:
         "put_call_equity": [0.6, 0.7, 0.8, 1.9],
         "aaii_bull_bear_spread": [10.0, 12.0, -5.0, -20.0],
     }
-    sentiment_node = {"put_call": {"equity": history["put_call_equity"][-1]}, "aaii": {"bull_bear_spread": history["aaii_bull_bear_spread"][-1]}}
+    sentiment_node = {
+        "put_call": {"equity": history["put_call_equity"][-1]},
+        "aaii": {"bull_bear_spread": history["aaii_bull_bear_spread"][-1]},
+    }
     result = sentiment_adaptor.aggregate(sentiment_node, history)
     assert result is not None
     assert 0.0 <= result.score <= 100.0

@@ -123,12 +123,18 @@ def test_run_includes_ai_sources(tmp_path, monkeypatch, load_run_fetch):
     monkeypatch.setattr(
         module,
         "_simulate_market_snapshot",
-        lambda trading_day: ({}, module.FetchStatus(name="market_sim", ok=True, message="ok")),
+        lambda trading_day: (
+            {},
+            module.FetchStatus(name="market_sim", ok=True, message="ok"),
+        ),
     )
     monkeypatch.setattr(
         module,
         "_fetch_coinbase_spot",
-        lambda: (50000.0, module.FetchStatus(name="coinbase_spot", ok=True, message="ok")),
+        lambda: (
+            50000.0,
+            module.FetchStatus(name="coinbase_spot", ok=True, message="ok"),
+        ),
     )
     monkeypatch.setattr(
         module,
@@ -138,17 +144,26 @@ def test_run_includes_ai_sources(tmp_path, monkeypatch, load_run_fetch):
     monkeypatch.setattr(
         module,
         "_fetch_okx_basis",
-        lambda spot_price: (0.0, module.FetchStatus(name="okx_basis", ok=True, message="ok")),
+        lambda spot_price: (
+            0.0,
+            module.FetchStatus(name="okx_basis", ok=True, message="ok"),
+        ),
     )
     monkeypatch.setattr(
         module,
         "_fetch_btc_etf_flow",
-        lambda api_keys: (12.5, module.FetchStatus(name="btc_etf_flow", ok=True, message="ok")),
+        lambda api_keys: (
+            12.5,
+            module.FetchStatus(name="btc_etf_flow", ok=True, message="ok"),
+        ),
     )
     monkeypatch.setattr(
         module,
         "_simulate_btc_theme",
-        lambda trading_day: ({}, module.FetchStatus(name="btc_sim", ok=True, message="ok")),
+        lambda trading_day: (
+            {},
+            module.FetchStatus(name="btc_sim", ok=True, message="ok"),
+        ),
     )
     monkeypatch.setattr(
         module,
@@ -167,7 +182,10 @@ def test_run_includes_ai_sources(tmp_path, monkeypatch, load_run_fetch):
     monkeypatch.setattr(
         module,
         "_fetch_finnhub_earnings",
-        lambda trading_day, api_keys: ([], module.FetchStatus(name="finnhub_earnings", ok=True, message="ok")),
+        lambda trading_day, api_keys: (
+            [],
+            module.FetchStatus(name="finnhub_earnings", ok=True, message="ok"),
+        ),
     )
     monkeypatch.setattr(
         module,

@@ -59,12 +59,18 @@ def test_average_true_range_matches_range_when_increasing() -> None:
 
 def test_pivot_levelsUses_last_completed() -> None:
     base = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    candles = [
-        _make_candle(base + timedelta(days=idx), 1900 + idx)
-        for idx in range(3)
-    ]
+    candles = [_make_candle(base + timedelta(days=idx), 1900 + idx) for idx in range(3)]
     levels = _pivot_levels(candles)
-    assert set(levels.keys()) == {"P", "S1", "R1", "S2", "R2", "prev_high", "prev_low", "prev_close"}
+    assert set(levels.keys()) == {
+        "P",
+        "S1",
+        "R1",
+        "S2",
+        "R2",
+        "prev_high",
+        "prev_low",
+        "prev_close",
+    }
     assert levels["prev_close"] == candles[-1].close
 
 
@@ -77,15 +83,24 @@ def test_generate_report_markdown_contains_sections() -> None:
     base = datetime(2024, 1, 1, tzinfo=timezone.utc)
     daily = [_make_candle(base + timedelta(days=idx), 1900 + idx) for idx in range(12)]
     intraday = {
-        "H1": [_make_candle(base + timedelta(hours=idx), 1915 + idx, complete=True) for idx in range(3)]
+        "H1": [
+            _make_candle(base + timedelta(hours=idx), 1915 + idx, complete=True)
+            for idx in range(3)
+        ]
     }
     cfg = TAReportConfig(
         instrument="XAU_USD",
         alignment_timezone="America/New_York",
         daily_alignment=17,
         windows=WindowsConfig(sma_fast=3, sma_slow=5, rsi=3, atr=3),
-        thresholds=ThresholdConfig(rsi_overbought=70.0, rsi_oversold=30.0, near_pct=0.01),
-        report=ReportOutputConfig(filename="out/test_ta.md", include_intraday=True, intraday_granularities=["H1"]),
+        thresholds=ThresholdConfig(
+            rsi_overbought=70.0, rsi_oversold=30.0, near_pct=0.01
+        ),
+        report=ReportOutputConfig(
+            filename="out/test_ta.md",
+            include_intraday=True,
+            intraday_granularities=["H1"],
+        ),
     )
 
     markdown = generate_report_markdown(daily, intraday, cfg)

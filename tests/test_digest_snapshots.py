@@ -22,13 +22,19 @@ def reset_snapshot_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DM_DISABLE_THROTTLE", raising=False)
 
 
-def test_digest_outputs_match_snapshots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_digest_outputs_match_snapshots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     snapshot_dir = Path(__file__).resolve().parent / "__snapshots__"
     monkeypatch.setattr(digest, "OUT_DIR", tmp_path)
     monkeypatch.setattr(
         digest,
         "TEMPLATE_DIR",
-        Path(__file__).resolve().parents[1] / "src" / "daily_messenger" / "digest" / "templates",
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "daily_messenger"
+        / "digest"
+        / "templates",
     )
     monkeypatch.setattr(digest, "datetime", _FixedDatetime)
     monkeypatch.setenv("GITHUB_REPOSITORY", "acme/daily-messenger")
@@ -87,16 +93,26 @@ def test_digest_outputs_match_snapshots(tmp_path: Path, monkeypatch: pytest.Monk
         ]
     }
 
-    (tmp_path / "scores.json").write_text(json.dumps(scores_payload, ensure_ascii=False), encoding="utf-8")
-    (tmp_path / "actions.json").write_text(json.dumps(actions_payload, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "scores.json").write_text(
+        json.dumps(scores_payload, ensure_ascii=False), encoding="utf-8"
+    )
+    (tmp_path / "actions.json").write_text(
+        json.dumps(actions_payload, ensure_ascii=False), encoding="utf-8"
+    )
 
     exit_code = digest.run([])
     assert exit_code == 0
 
     rendered_html = (tmp_path / "index.html").read_text(encoding="utf-8").strip()
-    expected_html = (snapshot_dir / "digest_index.html").read_text(encoding="utf-8").strip()
+    expected_html = (
+        (snapshot_dir / "digest_index.html").read_text(encoding="utf-8").strip()
+    )
     assert rendered_html == expected_html
 
-    rendered_card = json.loads((tmp_path / "digest_card.json").read_text(encoding="utf-8"))
-    expected_card = json.loads((snapshot_dir / "digest_card.json").read_text(encoding="utf-8"))
+    rendered_card = json.loads(
+        (tmp_path / "digest_card.json").read_text(encoding="utf-8")
+    )
+    expected_card = json.loads(
+        (snapshot_dir / "digest_card.json").read_text(encoding="utf-8")
+    )
     assert rendered_card == expected_card

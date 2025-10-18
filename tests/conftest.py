@@ -131,11 +131,20 @@ def pipeline_runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pipeline
     monkeypatch.setattr(run_fetch, "STATE_DIR", state_dir)
     monkeypatch.setattr(run_scores, "OUT_DIR", out_dir)
     monkeypatch.setattr(run_scores, "STATE_DIR", state_dir)
-    monkeypatch.setattr(run_scores, "SENTIMENT_HISTORY_PATH", state_dir / "sentiment_history.json")
-    monkeypatch.setattr(run_scores, "SCORE_HISTORY_PATH", state_dir / "score_history.json")
+    monkeypatch.setattr(
+        run_scores, "SENTIMENT_HISTORY_PATH", state_dir / "sentiment_history.json"
+    )
+    monkeypatch.setattr(
+        run_scores, "SCORE_HISTORY_PATH", state_dir / "score_history.json"
+    )
     monkeypatch.setattr(make_daily, "OUT_DIR", out_dir)
 
-    def _invoke(*, trading_day: str = "2024-04-01", etl_ok: bool = True, cli_args: List[str] | None = None) -> Path:
+    def _invoke(
+        *,
+        trading_day: str = "2024-04-01",
+        etl_ok: bool = True,
+        cli_args: List[str] | None = None,
+    ) -> Path:
         monkeypatch.setenv("DM_OVERRIDE_DATE", trading_day)
         monkeypatch.setenv("API_KEYS", "{}")
         monkeypatch.setenv("DM_RUN_ID", "test-run")
@@ -152,15 +161,39 @@ def pipeline_runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pipeline
                     "date": trading_day,
                     "ok": etl_ok,
                     "sources": [
-                        {"name": "market", "ok": etl_ok, "message": "synthetic dataset"},
-                        {"name": "coinbase_spot", "ok": etl_ok, "message": "synthetic dataset"},
-                        {"name": "okx_funding", "ok": etl_ok, "message": "synthetic dataset"},
-                        {"name": "okx_basis", "ok": etl_ok, "message": "synthetic dataset"},
+                        {
+                            "name": "market",
+                            "ok": etl_ok,
+                            "message": "synthetic dataset",
+                        },
+                        {
+                            "name": "coinbase_spot",
+                            "ok": etl_ok,
+                            "message": "synthetic dataset",
+                        },
+                        {
+                            "name": "okx_funding",
+                            "ok": etl_ok,
+                            "message": "synthetic dataset",
+                        },
+                        {
+                            "name": "okx_basis",
+                            "ok": etl_ok,
+                            "message": "synthetic dataset",
+                        },
                     ],
                 },
             )
-            run_meta.record_step(out_dir, "etl", "completed", trading_day=trading_day, degraded=not etl_ok)
-            (state_dir / f"fetch_{trading_day}").write_text(trading_day, encoding="utf-8")
+            run_meta.record_step(
+                out_dir,
+                "etl",
+                "completed",
+                trading_day=trading_day,
+                degraded=not etl_ok,
+            )
+            (state_dir / f"fetch_{trading_day}").write_text(
+                trading_day, encoding="utf-8"
+            )
             return 0
 
         monkeypatch.setattr(run_fetch, "run", fake_fetch)

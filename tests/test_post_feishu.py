@@ -42,7 +42,10 @@ def test_run_defaults_to_interactive_when_card_exists(
     summary_path.write_text("AI 总分 82\n操作：增持 AI", encoding="utf-8")
 
     card_payload = {
-        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "测试卡片"}},
+        "header": {
+            "template": "blue",
+            "title": {"tag": "plain_text", "content": "测试卡片"},
+        },
         "config": {"wide_screen_mode": True},
         "elements": [],
     }
@@ -76,7 +79,9 @@ def test_run_defaults_to_interactive_when_card_exists(
     assert captured["url"] == "https://example.com/hook"
 
 
-def test_run_defaults_to_post_when_card_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_defaults_to_post_when_card_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     summary_path = tmp_path / "digest_summary.txt"
     summary_path.write_text("AI 总分 60", encoding="utf-8")
     missing_card_path = tmp_path / "absent_card.json"

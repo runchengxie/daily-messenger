@@ -39,14 +39,20 @@ def test_build_summary_lines_limits_length():
 
 def test_build_card_payload_contains_summary_and_url():
     lines = ["AI 总分 82", "操作：增持 AI"]
-    payload = digest._build_card_payload("内参", lines, "https://example.com/report.html")
+    payload = digest._build_card_payload(
+        "内参", lines, "https://example.com/report.html"
+    )
 
     assert payload["header"]["title"]["content"] == "内参"
     assert payload["elements"][0]["text"]["content"].startswith("AI 总分 82")
-    assert payload["elements"][1]["actions"][0]["url"] == "https://example.com/report.html"
+    assert (
+        payload["elements"][1]["actions"][0]["url"] == "https://example.com/report.html"
+    )
 
 
-def test_run_generates_digest_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_generates_digest_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(digest, "OUT_DIR", tmp_path)
     monkeypatch.setattr(digest, "TEMPLATE_DIR", tmp_path / "templates")
     monkeypatch.setenv("GITHUB_REPOSITORY", "acme/daily-messenger")
@@ -94,8 +100,13 @@ def test_run_generates_digest_outputs(tmp_path: Path, monkeypatch: pytest.Monkey
     summary_text = (tmp_path / "digest_summary.txt").read_text(encoding="utf-8")
     assert "AI 总分 82" in summary_text
 
-    card_payload = json.loads((tmp_path / "digest_card.json").read_text(encoding="utf-8"))
-    assert card_payload["elements"][1]["actions"][0]["url"] == "https://acme.github.io/daily-messenger/2024-04-01.html"
+    card_payload = json.loads(
+        (tmp_path / "digest_card.json").read_text(encoding="utf-8")
+    )
+    assert (
+        card_payload["elements"][1]["actions"][0]["url"]
+        == "https://acme.github.io/daily-messenger/2024-04-01.html"
+    )
 
     meta = json.loads((tmp_path / "run_meta.json").read_text(encoding="utf-8"))
     digest_meta = meta["steps"]["digest"]
@@ -103,7 +114,9 @@ def test_run_generates_digest_outputs(tmp_path: Path, monkeypatch: pytest.Monkey
     assert not digest_meta.get("degraded")
 
 
-def test_run_with_degraded_flag_marks_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_with_degraded_flag_marks_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(digest, "OUT_DIR", tmp_path)
     monkeypatch.setattr(digest, "TEMPLATE_DIR", tmp_path / "templates")
     monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
@@ -144,7 +157,9 @@ def test_run_with_degraded_flag_marks_outputs(tmp_path: Path, monkeypatch: pytes
     summary_text = (tmp_path / "digest_summary.txt").read_text(encoding="utf-8")
     assert summary_text.startswith("⚠️ 数据延迟")
 
-    card_payload = json.loads((tmp_path / "digest_card.json").read_text(encoding="utf-8"))
+    card_payload = json.loads(
+        (tmp_path / "digest_card.json").read_text(encoding="utf-8")
+    )
     assert "（数据延迟）" in card_payload["header"]["title"]["content"]
 
     meta = json.loads((tmp_path / "run_meta.json").read_text(encoding="utf-8"))
@@ -153,7 +168,9 @@ def test_run_with_degraded_flag_marks_outputs(tmp_path: Path, monkeypatch: pytes
     assert digest_meta.get("degraded")
 
 
-def test_run_with_frozen_clock_renders_stable_timestamp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_with_frozen_clock_renders_stable_timestamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(digest, "OUT_DIR", tmp_path)
     monkeypatch.setattr(digest, "TEMPLATE_DIR", tmp_path / "templates")
 

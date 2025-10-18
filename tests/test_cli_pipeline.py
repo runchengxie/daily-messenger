@@ -36,7 +36,9 @@ def test_cli_pipeline_smoke(pipeline_runner) -> None:
     actions = json.loads((out_dir / "actions.json").read_text(encoding="utf-8"))
     assert isinstance(actions.get("items"), list)
 
-    card_payload = json.loads((out_dir / "digest_card.json").read_text(encoding="utf-8"))
+    card_payload = json.loads(
+        (out_dir / "digest_card.json").read_text(encoding="utf-8")
+    )
     assert card_payload["header"]["title"]["content"].startswith("内参")
     assert card_payload["elements"], "Feishu card should include body elements"
 

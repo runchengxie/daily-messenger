@@ -5,6 +5,7 @@ This script fetches (or simulates) the minimum viable data required for
 subsequent scoring and report generation. It intentionally keeps the data
 model small so it can be swapped with real data sources later.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -190,7 +191,13 @@ def _load_api_keys(logger: logging.Logger | None) -> Dict[str, str]:
                 continue
             except Exception as exc:  # noqa: BLE001
                 if logger:
-                    log(logger, logging.WARNING, "api_keys_path_failed", path=str(candidate), error=str(exc))
+                    log(
+                        logger,
+                        logging.WARNING,
+                        "api_keys_path_failed",
+                        path=str(candidate),
+                        error=str(exc),
+                    )
                 continue
             if isinstance(payload, dict):
                 data.update(payload)
@@ -203,7 +210,12 @@ def _load_api_keys(logger: logging.Logger | None) -> Dict[str, str]:
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
             if logger:
-                log(logger, logging.ERROR, "api_keys_inline_invalid_json", error=str(exc))
+                log(
+                    logger,
+                    logging.ERROR,
+                    "api_keys_inline_invalid_json",
+                    error=str(exc),
+                )
         else:
             if isinstance(payload, dict):
                 data.update(payload)
@@ -222,7 +234,9 @@ def _load_api_keys(logger: logging.Logger | None) -> Dict[str, str]:
     # 4) Trading Economics username/password split entries
     if "trading_economics" not in data:
         te_user = env.get("TRADING_ECONOMICS_USER") or env.get("trading_economics_user")
-        te_password = env.get("TRADING_ECONOMICS_PASSWORD") or env.get("trading_economics_password")
+        te_password = env.get("TRADING_ECONOMICS_PASSWORD") or env.get(
+            "trading_economics_password"
+        )
         if te_user and te_password:
             data["trading_economics"] = f"{te_user}:{te_password}"
 
@@ -231,7 +245,13 @@ def _load_api_keys(logger: logging.Logger | None) -> Dict[str, str]:
     except ApiKeyValidationError as exc:
         for key, reason in exc.errors.items():
             if logger:
-                log(logger, logging.WARNING, "api_key_invalid_entry", key=key, reason=reason)
+                log(
+                    logger,
+                    logging.WARNING,
+                    "api_key_invalid_entry",
+                    key=key,
+                    reason=reason,
+                )
         normalized = {k: v for k, v in data.items() if isinstance(v, str) and v.strip()}
 
     extra_keys = sorted(set(normalized) - set(CANONICAL_API_KEYS))
@@ -279,7 +299,9 @@ def _resolve_arxiv_config(config: Dict[str, Any]) -> Tuple[Dict[str, Any], float
     return request_params, throttle
 
 
-def _load_configuration(logger: logging.Logger | None = None) -> Tuple[Dict[str, Any], List[str], Dict[str, Any], float]:
+def _load_configuration(
+    logger: logging.Logger | None = None,
+) -> Tuple[Dict[str, Any], List[str], Dict[str, Any], float]:
     api_keys = _load_api_keys(logger)
     ai_feeds = _resolve_ai_feeds(api_keys)
     arxiv_params, arxiv_throttle = _resolve_arxiv_config(api_keys)
@@ -292,7 +314,9 @@ ARXIV_QUERY_PARAMS: Dict[str, Any] = dict(DEFAULT_ARXIV_PARAMS)
 ARXIV_THROTTLE: float = DEFAULT_ARXIV_THROTTLE
 
 # Preload configuration once at import so module globals reflect runtime hints.
-API_KEYS_CACHE, AI_NEWS_FEEDS, ARXIV_QUERY_PARAMS, ARXIV_THROTTLE = _load_configuration()
+API_KEYS_CACHE, AI_NEWS_FEEDS, ARXIV_QUERY_PARAMS, ARXIV_THROTTLE = (
+    _load_configuration()
+)
 
 
 def _respect_retry_after(resp: requests.Response) -> Optional[float]:
@@ -370,24 +394,41 @@ def _request_json(
                 )
             except requests.RequestException as exc:
                 if attempt > policy.retries:
-                    raise RuntimeError(f"HTTP 请求失败（已重试 {attempt - 1} 次）: {exc}") from exc
-                sleep_seconds = min(delay * (1.0 + random.random() * policy.jitter), policy.max_sleep)
-                if policy.hard_deadline and (time.monotonic() - start + sleep_seconds) > policy.hard_deadline:
+                    raise RuntimeError(
+                        f"HTTP 请求失败（已重试 {attempt - 1} 次）: {exc}"
+                    ) from exc
+                sleep_seconds = min(
+                    delay * (1.0 + random.random() * policy.jitter), policy.max_sleep
+                )
+                if (
+                    policy.hard_deadline
+                    and (time.monotonic() - start + sleep_seconds)
+                    > policy.hard_deadline
+                ):
                     raise RuntimeError("HTTP 请求失败：超过重试预算") from exc
                 _sleep_exact(sleep_seconds)
                 delay *= policy.backoff_factor
                 continue
 
             if resp.status_code in policy.status_forcelist:
-                retry_after = _respect_retry_after(resp) if resp.status_code == 429 else None
+                retry_after = (
+                    _respect_retry_after(resp) if resp.status_code == 429 else None
+                )
                 if attempt > policy.retries:
                     resp.raise_for_status()
                 sleep_seconds = (
                     retry_after
                     if retry_after is not None
-                    else min(delay * (1.0 + random.random() * policy.jitter), policy.max_sleep)
+                    else min(
+                        delay * (1.0 + random.random() * policy.jitter),
+                        policy.max_sleep,
+                    )
                 )
-                if policy.hard_deadline and (time.monotonic() - start + sleep_seconds) > policy.hard_deadline:
+                if (
+                    policy.hard_deadline
+                    and (time.monotonic() - start + sleep_seconds)
+                    > policy.hard_deadline
+                ):
                     resp.raise_for_status()
                 _sleep_exact(sleep_seconds)
                 delay *= policy.backoff_factor
@@ -397,7 +438,9 @@ def _request_json(
                 resp.raise_for_status()
             except Exception as exc:  # noqa: BLE001
                 snippet = resp.text[:200] if getattr(resp, "text", None) else str(exc)
-                raise RuntimeError(f"HTTP 状态错误: {resp.status_code} {snippet}") from exc
+                raise RuntimeError(
+                    f"HTTP 状态错误: {resp.status_code} {snippet}"
+                ) from exc
 
             try:
                 payload = resp.json()
@@ -474,12 +517,16 @@ def _normalize_rss_date(raw: str) -> Optional[str]:
     return parsed.date().isoformat()
 
 
-def _fetch_ai_rss_events(feeds: List[str]) -> Tuple[List[Dict[str, Any]], List[FetchStatus]]:
+def _fetch_ai_rss_events(
+    feeds: List[str],
+) -> Tuple[List[Dict[str, Any]], List[FetchStatus]]:
     events: List[Dict[str, Any]] = []
     statuses: List[FetchStatus] = []
     for idx, url in enumerate(feeds, start=1):
         try:
-            resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT)
+            resp = requests.get(
+                url, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT
+            )
             resp.raise_for_status()
         except Exception as exc:  # noqa: BLE001
             statuses.append(
@@ -545,10 +592,17 @@ def _fetch_ai_rss_events(feeds: List[str]) -> Tuple[List[Dict[str, Any]], List[F
     return events, statuses
 
 
-def _fetch_arxiv_events(params: Dict[str, Any], throttle: float) -> Tuple[List[Dict[str, Any]], FetchStatus]:
+def _fetch_arxiv_events(
+    params: Dict[str, Any], throttle: float
+) -> Tuple[List[Dict[str, Any]], FetchStatus]:
     url = "https://export.arxiv.org/api/query"
     try:
-        resp = requests.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT)
+        resp = requests.get(
+            url,
+            params=params,
+            headers={"User-Agent": USER_AGENT},
+            timeout=REQUEST_TIMEOUT,
+        )
         resp.raise_for_status()
     except Exception as exc:  # noqa: BLE001
         return [], FetchStatus(name="arxiv", ok=False, message=f"arXiv 请求失败: {exc}")
@@ -556,7 +610,9 @@ def _fetch_arxiv_events(params: Dict[str, Any], throttle: float) -> Tuple[List[D
     try:
         root = ET.fromstring(resp.content)
     except ET.ParseError as exc:
-        return [], FetchStatus(name="arxiv", ok=False, message=f"arXiv 响应解析失败: {exc}")
+        return [], FetchStatus(
+            name="arxiv", ok=False, message=f"arXiv 响应解析失败: {exc}"
+        )
 
     events: List[Dict[str, Any]] = []
     for entry in root.findall(".//{*}entry"):
@@ -567,7 +623,11 @@ def _fetch_arxiv_events(params: Dict[str, Any], throttle: float) -> Tuple[List[D
         normalized_date = None
         if date_text:
             try:
-                normalized_date = datetime.fromisoformat(date_text.replace("Z", "+00:00")).date().isoformat()
+                normalized_date = (
+                    datetime.fromisoformat(date_text.replace("Z", "+00:00"))
+                    .date()
+                    .isoformat()
+                )
             except ValueError:
                 normalized_date = _normalize_rss_date(date_text)
         if not normalized_date:
@@ -584,7 +644,9 @@ def _fetch_arxiv_events(params: Dict[str, Any], throttle: float) -> Tuple[List[D
     if throttle > 0:
         _sleep(throttle)
 
-    return events, FetchStatus(name="arxiv", ok=True, message=f"arXiv 返回 {len(events)} 篇文章")
+    return events, FetchStatus(
+        name="arxiv", ok=True, message=f"arXiv 返回 {len(events)} 篇文章"
+    )
 
 
 class _HTMLTableParser(HTMLParser):
@@ -672,12 +734,20 @@ def _fetch_sosovalue_latest_flow(api_key: str) -> Tuple[Optional[float], FetchSt
             policy=RetryPolicy(retries=2, backoff_start=0.8, hard_deadline=15.0),
         )
     except Exception as exc:  # noqa: BLE001
-        return None, FetchStatus(name="btc_etf_flow_sosovalue", ok=False, message=f"SoSoValue 请求失败: {exc}")
+        return None, FetchStatus(
+            name="btc_etf_flow_sosovalue",
+            ok=False,
+            message=f"SoSoValue 请求失败: {exc}",
+        )
 
     code = payload.get("code")
     if code not in (0, "0", 200, "200", None):
         message = payload.get("msg") or payload.get("message") or f"code={code}"
-        return None, FetchStatus(name="btc_etf_flow_sosovalue", ok=False, message=f"SoSoValue 返回错误: {message}")
+        return None, FetchStatus(
+            name="btc_etf_flow_sosovalue",
+            ok=False,
+            message=f"SoSoValue 返回错误: {message}",
+        )
 
     data = payload.get("data")
     records: List[Dict[str, Any]] = []
@@ -717,10 +787,18 @@ def _fetch_sosovalue_latest_flow(api_key: str) -> Tuple[Optional[float], FetchSt
             latest_amount = amount
 
     if latest_amount is None or not latest_day:
-        return None, FetchStatus(name="btc_etf_flow_sosovalue", ok=False, message="SoSoValue 响应缺少有效数据")
+        return None, FetchStatus(
+            name="btc_etf_flow_sosovalue",
+            ok=False,
+            message="SoSoValue 响应缺少有效数据",
+        )
 
     net_musd = latest_amount / 1_000_000.0
-    return net_musd, FetchStatus(name="btc_etf_flow_sosovalue", ok=True, message=f"SoSoValue ETF 净流入已获取（{latest_day}）")
+    return net_musd, FetchStatus(
+        name="btc_etf_flow_sosovalue",
+        ok=True,
+        message=f"SoSoValue ETF 净流入已获取（{latest_day}）",
+    )
 
 
 def _fetch_coinglass_latest_flow(api_key: str) -> Tuple[Optional[float], FetchStatus]:
@@ -788,11 +866,21 @@ def _fetch_coinglass_latest_flow(api_key: str) -> Tuple[Optional[float], FetchSt
             errors.append(f"{url}: 缺少有效数据")
             continue
 
-        net_amount = latest_amount / 1_000_000.0 if abs(latest_amount) > 100000 else latest_amount
-        return net_amount, FetchStatus(name="btc_etf_flow_coinglass", ok=True, message=f"CoinGlass ETF 净流入已获取（{latest_day}）")
+        net_amount = (
+            latest_amount / 1_000_000.0
+            if abs(latest_amount) > 100000
+            else latest_amount
+        )
+        return net_amount, FetchStatus(
+            name="btc_etf_flow_coinglass",
+            ok=True,
+            message=f"CoinGlass ETF 净流入已获取（{latest_day}）",
+        )
 
     detail = "; ".join(errors) if errors else "未知原因"
-    return None, FetchStatus(name="btc_etf_flow_coinglass", ok=False, message=f"CoinGlass 请求失败: {detail}")
+    return None, FetchStatus(
+        name="btc_etf_flow_coinglass", ok=False, message=f"CoinGlass 请求失败: {detail}"
+    )
 
 
 FARSIDE_PAGE_URL = "https://farside.co.uk/bitcoin-etf-flow-all-data/"
@@ -849,20 +937,29 @@ def _fetch_farside_latest_flow() -> Tuple[Optional[float], FetchStatus]:
     if cookie:
         session.headers.update({"Cookie": cookie})
     errors: List[str] = []
-    for fetcher, label in ((
-        _fetch_farside_flow_from_html,
-        "html",
-    ), (_fetch_farside_flow_from_api, "api")):
+    for fetcher, label in (
+        (
+            _fetch_farside_flow_from_html,
+            "html",
+        ),
+        (_fetch_farside_flow_from_api, "api"),
+    ):
         try:
             amount = fetcher(session)
-            return amount, FetchStatus(name="btc_etf_flow", ok=True, message=f"ETF 净流入读取成功（{label}）")
+            return amount, FetchStatus(
+                name="btc_etf_flow", ok=True, message=f"ETF 净流入读取成功（{label}）"
+            )
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{label}: {exc}")
     detail = "; ".join(errors) if errors else "未知原因"
-    return None, FetchStatus(name="btc_etf_flow", ok=False, message=f"Farside 请求失败: {detail}")
+    return None, FetchStatus(
+        name="btc_etf_flow", ok=False, message=f"Farside 请求失败: {detail}"
+    )
 
 
-def _fetch_btc_etf_flow(api_keys: Dict[str, Any]) -> Tuple[Optional[float], FetchStatus]:
+def _fetch_btc_etf_flow(
+    api_keys: Dict[str, Any],
+) -> Tuple[Optional[float], FetchStatus]:
     attempts: List[str] = []
 
     sosovalue_key = _coerce_api_key(api_keys.get("sosovalue"))
@@ -904,14 +1001,20 @@ def _fetch_coinbase_spot() -> Tuple[Optional[float], FetchStatus]:
     try:
         payload = _request_json(url)
     except Exception as exc:  # noqa: BLE001
-        return None, FetchStatus(name="coinbase_spot", ok=False, message=f"Coinbase 请求失败: {exc}")
+        return None, FetchStatus(
+            name="coinbase_spot", ok=False, message=f"Coinbase 请求失败: {exc}"
+        )
 
     try:
         amount = float(payload["data"]["amount"])
     except (KeyError, TypeError, ValueError) as exc:
-        return None, FetchStatus(name="coinbase_spot", ok=False, message=f"Coinbase 响应解析失败: {exc}")
+        return None, FetchStatus(
+            name="coinbase_spot", ok=False, message=f"Coinbase 响应解析失败: {exc}"
+        )
 
-    return amount, FetchStatus(name="coinbase_spot", ok=True, message="Coinbase 现货价格已获取")
+    return amount, FetchStatus(
+        name="coinbase_spot", ok=True, message="Coinbase 现货价格已获取"
+    )
 
 
 def _fetch_okx_funding() -> Tuple[Optional[float], FetchStatus]:
@@ -919,19 +1022,27 @@ def _fetch_okx_funding() -> Tuple[Optional[float], FetchStatus]:
     try:
         payload = _request_json(url, params={"instId": "BTC-USD-SWAP"})
     except Exception as exc:  # noqa: BLE001
-        return None, FetchStatus(name="okx_funding", ok=False, message=f"OKX 请求失败: {exc}")
+        return None, FetchStatus(
+            name="okx_funding", ok=False, message=f"OKX 请求失败: {exc}"
+        )
 
     if payload.get("code") != "0":
-        return None, FetchStatus(name="okx_funding", ok=False, message=f"OKX 返回错误: {payload.get('msg')}")
+        return None, FetchStatus(
+            name="okx_funding", ok=False, message=f"OKX 返回错误: {payload.get('msg')}"
+        )
 
     data = payload.get("data") or []
     if not data:
-        return None, FetchStatus(name="okx_funding", ok=False, message="OKX 未返回资金费率")
+        return None, FetchStatus(
+            name="okx_funding", ok=False, message="OKX 未返回资金费率"
+        )
 
     try:
         rate = float(data[0]["fundingRate"])
     except (KeyError, TypeError, ValueError) as exc:
-        return None, FetchStatus(name="okx_funding", ok=False, message=f"资金费率解析失败: {exc}")
+        return None, FetchStatus(
+            name="okx_funding", ok=False, message=f"资金费率解析失败: {exc}"
+        )
 
     return rate, FetchStatus(name="okx_funding", ok=True, message="OKX 资金费率已获取")
 
@@ -941,22 +1052,32 @@ def _fetch_okx_basis(spot_price: float) -> Tuple[Optional[float], FetchStatus]:
     try:
         payload = _request_json(url, params={"instId": "BTC-USD-SWAP"})
     except Exception as exc:  # noqa: BLE001
-        return None, FetchStatus(name="okx_basis", ok=False, message=f"OKX ticker 请求失败: {exc}")
+        return None, FetchStatus(
+            name="okx_basis", ok=False, message=f"OKX ticker 请求失败: {exc}"
+        )
 
     if payload.get("code") != "0":
-        return None, FetchStatus(name="okx_basis", ok=False, message=f"OKX 返回错误: {payload.get('msg')}")
+        return None, FetchStatus(
+            name="okx_basis", ok=False, message=f"OKX 返回错误: {payload.get('msg')}"
+        )
 
     data = payload.get("data") or []
     if not data:
-        return None, FetchStatus(name="okx_basis", ok=False, message="OKX 未返回永续价格")
+        return None, FetchStatus(
+            name="okx_basis", ok=False, message="OKX 未返回永续价格"
+        )
 
     try:
         last_price = float(data[0]["last"])
     except (KeyError, TypeError, ValueError) as exc:
-        return None, FetchStatus(name="okx_basis", ok=False, message=f"永续价格解析失败: {exc}")
+        return None, FetchStatus(
+            name="okx_basis", ok=False, message=f"永续价格解析失败: {exc}"
+        )
 
     if spot_price <= 0:
-        return None, FetchStatus(name="okx_basis", ok=False, message="现货价格无效，无法计算基差")
+        return None, FetchStatus(
+            name="okx_basis", ok=False, message="现货价格无效，无法计算基差"
+        )
 
     basis = (last_price - spot_price) / spot_price
     return basis, FetchStatus(name="okx_basis", ok=True, message="已计算 OKX 永续基差")
@@ -972,12 +1093,18 @@ def _fetch_alpha_series(symbol: str, api_key: str) -> Dict[str, Any]:
     payload = _request_json(url, params=params)
     key = next((k for k in payload if "Time Series" in k), None)
     if not key:
-        message = payload.get("Information") or payload.get("Note") or "Alpha Vantage 未返回时间序列"
+        message = (
+            payload.get("Information")
+            or payload.get("Note")
+            or "Alpha Vantage 未返回时间序列"
+        )
         raise RuntimeError(message)
     return payload[key]
 
 
-def _extract_close_change(series: Dict[str, Dict[str, str]]) -> Tuple[str, float, float]:
+def _extract_close_change(
+    series: Dict[str, Dict[str, str]],
+) -> Tuple[str, float, float]:
     dates = sorted(series.keys(), reverse=True)
     if len(dates) < 2:
         raise RuntimeError("时间序列不足以计算涨跌幅")
@@ -1003,12 +1130,21 @@ def _stooq_symbol_candidates(symbol: str) -> List[str]:
 
 def _fetch_stooq_series(symbol: str) -> List[Dict[str, Any]]:
     params = {"s": symbol.lower(), "i": "d"}
-    resp = requests.get("https://stooq.com/q/d/l/", params=params, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT)
+    resp = requests.get(
+        "https://stooq.com/q/d/l/",
+        params=params,
+        headers={"User-Agent": USER_AGENT},
+        timeout=REQUEST_TIMEOUT,
+    )
     resp.raise_for_status()
     reader = csv.DictReader(resp.text.splitlines())
     rows: List[Dict[str, Any]] = []
     for row in reader:
-        normalized = {k.strip().lower(): (v.strip() if isinstance(v, str) else v) for k, v in row.items() if k}
+        normalized = {
+            k.strip().lower(): (v.strip() if isinstance(v, str) else v)
+            for k, v in row.items()
+            if k
+        }
         if normalized.get("date"):
             rows.append(normalized)
     if len(rows) < 2:
@@ -1016,7 +1152,9 @@ def _fetch_stooq_series(symbol: str) -> List[Dict[str, Any]]:
     return rows
 
 
-def _extract_latest_change(rows: List[Dict[str, Any]], *, close_key: str = "close") -> Tuple[str, float, float]:
+def _extract_latest_change(
+    rows: List[Dict[str, Any]], *, close_key: str = "close"
+) -> Tuple[str, float, float]:
     ordered = sorted(rows, key=lambda item: item.get("date"))
     latest, prev = ordered[-1], ordered[-2]
     latest_close = _safe_float(latest.get(close_key))
@@ -1076,7 +1214,9 @@ def _extract_yahoo_change(chart: Dict[str, Any]) -> Tuple[str, float, float]:
     return day, latest_close, change_pct
 
 
-def _attempt_quote(fetchers: Iterable[Tuple[str, Callable[[], _QuoteSnapshot]]]) -> _QuoteSnapshot:
+def _attempt_quote(
+    fetchers: Iterable[Tuple[str, Callable[[], _QuoteSnapshot]]],
+) -> _QuoteSnapshot:
     errors: List[str] = []
     for label, fetcher in fetchers:
         try:
@@ -1093,7 +1233,12 @@ def _fetch_quote_from_stooq(symbol: str) -> _QuoteSnapshot:
         try:
             rows = _fetch_stooq_series(candidate)
             day, close, change_pct = _extract_latest_change(rows)
-            return _QuoteSnapshot(day=day, close=round(close, 4), change_pct=round(change_pct, 4), source=f"stooq:{candidate}")
+            return _QuoteSnapshot(
+                day=day,
+                close=round(close, 4),
+                change_pct=round(change_pct, 4),
+                source=f"stooq:{candidate}",
+            )
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{candidate}: {exc}")
     detail = "; ".join(errors) if errors else "Stooq 未返回数据"
@@ -1103,7 +1248,12 @@ def _fetch_quote_from_stooq(symbol: str) -> _QuoteSnapshot:
 def _fetch_quote_from_yahoo(symbol: str) -> _QuoteSnapshot:
     chart = _fetch_yahoo_chart(symbol)
     day, close, change_pct = _extract_yahoo_change(chart)
-    return _QuoteSnapshot(day=day, close=round(close, 4), change_pct=round(change_pct, 4), source=f"yahoo:{symbol}")
+    return _QuoteSnapshot(
+        day=day,
+        close=round(close, 4),
+        change_pct=round(change_pct, 4),
+        source=f"yahoo:{symbol}",
+    )
 
 
 def _fetch_quote_from_fmp(symbol: str, api_key: str) -> _QuoteSnapshot:
@@ -1121,7 +1271,9 @@ def _fetch_quote_from_fmp(symbol: str, api_key: str) -> _QuoteSnapshot:
     if not day or close is None or prev_close in (None, 0):
         raise RuntimeError("FMP 历史数据缺字段")
     change_pct = (close - prev_close) / prev_close * 100
-    return _QuoteSnapshot(day=day, close=round(close, 4), change_pct=round(change_pct, 4), source="fmp")
+    return _QuoteSnapshot(
+        day=day, close=round(close, 4), change_pct=round(change_pct, 4), source="fmp"
+    )
 
 
 def _fetch_quote_from_twelve_data(symbol: str, api_key: str) -> _QuoteSnapshot:
@@ -1146,7 +1298,12 @@ def _fetch_quote_from_twelve_data(symbol: str, api_key: str) -> _QuoteSnapshot:
         raise RuntimeError("Twelve Data 时间序列缺字段")
     change_pct = (close - prev_close) / prev_close * 100
     normalized_day = day.split(" ")[0] if isinstance(day, str) else str(day)
-    return _QuoteSnapshot(day=normalized_day, close=round(close, 4), change_pct=round(change_pct, 4), source="twelve_data")
+    return _QuoteSnapshot(
+        day=normalized_day,
+        close=round(close, 4),
+        change_pct=round(change_pct, 4),
+        source="twelve_data",
+    )
 
 
 def _fetch_quote_from_alpaca(symbol: str, key_id: str, secret: str) -> _QuoteSnapshot:
@@ -1161,7 +1318,9 @@ def _fetch_quote_from_alpaca(symbol: str, key_id: str, secret: str) -> _QuoteSna
         "APCA-API-SECRET-KEY": secret,
         "Accept": "application/json",
     }
-    payload = _request_json("https://data.alpaca.markets/v2/stocks/bars", params=params, headers=headers)
+    payload = _request_json(
+        "https://data.alpaca.markets/v2/stocks/bars", params=params, headers=headers
+    )
     bars_map = payload.get("bars") if isinstance(payload, dict) else None
     if not isinstance(bars_map, dict):
         raise RuntimeError("Alpaca 响应缺少 bars 字段")
@@ -1182,13 +1341,20 @@ def _fetch_quote_from_alpaca(symbol: str, key_id: str, secret: str) -> _QuoteSna
     raw_ts = str(latest.get("t"))
     day = raw_ts.split("T")[0] if "T" in raw_ts else raw_ts[:10]
     change_pct = (close - prev_close) / prev_close * 100
-    return _QuoteSnapshot(day=day, close=round(close, 4), change_pct=round(change_pct, 4), source="alpaca")
+    return _QuoteSnapshot(
+        day=day, close=round(close, 4), change_pct=round(change_pct, 4), source="alpaca"
+    )
 
 
 def _fetch_quote_from_alpha(symbol: str, api_key: str) -> _QuoteSnapshot:
     series = _fetch_alpha_series(symbol, api_key)
     day, close, change_pct = _extract_close_change(series)
-    return _QuoteSnapshot(day=day, close=round(close, 4), change_pct=round(change_pct, 4), source="alpha_vantage")
+    return _QuoteSnapshot(
+        day=day,
+        close=round(close, 4),
+        change_pct=round(change_pct, 4),
+        source="alpha_vantage",
+    )
 
 
 def _fetch_hsi_from_yahoo() -> Tuple[List[Dict[str, Any]], str]:
@@ -1219,10 +1385,14 @@ def _fetch_hk_proxy_from_yahoo(symbol: str) -> Tuple[List[Dict[str, Any]], str]:
     return payload, message
 
 
-def _fetch_hk_market_snapshot(api_keys: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], FetchStatus]:
+def _fetch_hk_market_snapshot(
+    api_keys: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], FetchStatus]:
     errors: List[str] = []
 
-    fetchers: List[Callable[[], Tuple[List[Dict[str, Any]], str]]] = [_fetch_hsi_from_stooq]
+    fetchers: List[Callable[[], Tuple[List[Dict[str, Any]], str]]] = [
+        _fetch_hsi_from_stooq
+    ]
     if _yahoo_allowed():
         fetchers.append(_fetch_hsi_from_yahoo)
 
@@ -1242,7 +1412,10 @@ def _fetch_hk_market_snapshot(api_keys: Dict[str, Any]) -> Tuple[List[Dict[str, 
                 errors.append(f"{proxy}: {exc}")
 
     detail = "; ".join(errors) if errors else "未知原因"
-    return [], FetchStatus(name="hongkong_HSI", ok=False, message=f"港股行情获取失败: {detail}")
+    return [], FetchStatus(
+        name="hongkong_HSI", ok=False, message=f"港股行情获取失败: {detail}"
+    )
+
 
 EDGAR_TICKER_URL = "https://www.sec.gov/files/company_tickers.json"
 EDGAR_COMPANYFACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
@@ -1460,7 +1633,14 @@ def _extract_edgar_metrics(facts: Dict[str, Any]) -> Dict[str, Optional[float]]:
     revenue_fact = _edgar_select_fact(
         facts,
         [
-            ("us-gaap", ["Revenues", "SalesRevenueNet", "RevenueFromContractWithCustomerExcludingAssessedTax"]),
+            (
+                "us-gaap",
+                [
+                    "Revenues",
+                    "SalesRevenueNet",
+                    "RevenueFromContractWithCustomerExcludingAssessedTax",
+                ],
+            ),
             ("ifrs-full", ["Revenue", "RevenueFromContractsWithCustomers"]),
         ],
     )
@@ -1523,7 +1703,8 @@ def _extract_edgar_metrics(facts: Dict[str, Any]) -> Dict[str, Optional[float]]:
     equity_latest = _edgar_latest_instant(equity_fact)
 
     if not any(
-        value is not None for value in (revenue_ttm, net_income_ttm, shares_latest, equity_latest)
+        value is not None
+        for value in (revenue_ttm, net_income_ttm, shares_latest, equity_latest)
     ):
         return {}
 
@@ -1544,18 +1725,22 @@ def _extract_fmp_metrics(payload: Any) -> Dict[str, Optional[float]]:
                 entries.extend(item for item in block if isinstance(item, dict))
             elif isinstance(block, dict):
                 entries.append(block)
-        if not entries and any(field in payload for field in ("revenueTTM", "netIncomeTTM")):
+        if not entries and any(
+            field in payload for field in ("revenueTTM", "netIncomeTTM")
+        ):
             entries.append(payload)
     elif isinstance(payload, list):
         entries = [item for item in payload if isinstance(item, dict)]
     if not entries:
         return {}
+
     def _entry_date(entry: Dict[str, Any]) -> str:
         for key in ("date", "period", "fiscalDateEnding"):
             value = entry.get(key)
             if value:
                 return str(value)
         return ""
+
     entries.sort(key=_entry_date, reverse=True)
     record = entries[0]
     lower_map = {str(k).lower(): v for k, v in record.items()}
@@ -1623,7 +1808,9 @@ def _fetch_fmp_fundamentals(
     results: Dict[str, Dict[str, Optional[float]]] = {}
     errors: List[str] = []
     for ticker in sorted({s.upper() for s in symbols if s}):
-        url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{quote(ticker)}"
+        url = (
+            f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{quote(ticker)}"
+        )
         params = {"apikey": api_key}
         try:
             payload = _request_json(url, params=params)
@@ -1678,7 +1865,9 @@ def _edgar_healthcheck() -> FetchStatus:
             except StopIteration as exc:
                 raise RuntimeError("EDGAR 代码映射缺失 CIK") from exc
         _fetch_edgar_companyfacts(session, cik)
-        return FetchStatus(name="edgar", ok=True, message=f"EDGAR 正常（UA={EDGAR_USER_AGENT}）")
+        return FetchStatus(
+            name="edgar", ok=True, message=f"EDGAR 正常（UA={EDGAR_USER_AGENT}）"
+        )
     except Exception as exc:  # noqa: BLE001
         return FetchStatus(name="edgar", ok=False, message=f"{exc}")
     finally:
@@ -1731,7 +1920,9 @@ def _fetch_yahoo_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
     raise RuntimeError(f"Yahoo Finance 未返回报价: {last_error or 'empty'}")
 
 
-def _fetch_price_only_quotes(symbols: List[str], api_keys: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
+def _fetch_price_only_quotes(
+    symbols: List[str], api_keys: Optional[Dict[str, Any]] = None
+) -> Dict[str, Dict[str, Any]]:
     results: Dict[str, Dict[str, Any]] = {}
     alpaca_key: Optional[str] = None
     alpaca_secret: Optional[str] = None
@@ -1778,7 +1969,9 @@ def _mean(values: List[Optional[float]]) -> Optional[float]:
     return sum(filtered) / len(filtered)
 
 
-def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, Any], FetchStatus]:
+def _fetch_theme_metrics_from_fmp(
+    api_keys: Dict[str, Any],
+) -> Tuple[Dict[str, Any], FetchStatus]:
     all_symbols: List[str] = []
     for symbols in FMP_THEME_SYMBOLS.values():
         all_symbols.extend(symbols)
@@ -1803,11 +1996,17 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
                 except Exception as fallback_exc:  # noqa: BLE001
                     errors.append(f"Yahoo: {fallback_exc}")
                     detail = "; ".join(errors) if errors else "未知原因"
-                    return {}, FetchStatus(name="fmp_theme", ok=False, message=f"主题估值获取失败: {detail}")
+                    return {}, FetchStatus(
+                        name="fmp_theme",
+                        ok=False,
+                        message=f"主题估值获取失败: {detail}",
+                    )
             else:
                 detail = "; ".join(errors) if errors else "无可用行情来源"
                 detail = f"{detail}；已禁用 Yahoo 兜底"
-                return {}, FetchStatus(name="fmp_theme", ok=False, message=f"主题估值获取失败: {detail}")
+                return {}, FetchStatus(
+                    name="fmp_theme", ok=False, message=f"主题估值获取失败: {detail}"
+                )
     else:
         try:
             quotes = _fetch_yahoo_quotes(all_symbols)
@@ -1820,7 +2019,9 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
             except Exception as fallback_exc:  # noqa: BLE001
                 errors.append(f"price_only: {fallback_exc}")
                 detail = "; ".join(errors) if errors else "未知原因"
-                return {}, FetchStatus(name="fmp_theme", ok=False, message=f"主题估值获取失败: {detail}")
+                return {}, FetchStatus(
+                    name="fmp_theme", ok=False, message=f"主题估值获取失败: {detail}"
+                )
 
     fundamentals: Dict[str, Dict[str, Optional[float]]] = {}
     missing_cik: List[str] = []
@@ -1836,7 +2037,12 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
     fmp_key = _coerce_api_key(api_keys.get("financial_modeling_prep"))
     if fmp_key:
         needs_fmp: List[str] = []
-        required_fields = ("net_income_ttm", "revenue_ttm", "shares_diluted_latest", "equity_latest")
+        required_fields = (
+            "net_income_ttm",
+            "revenue_ttm",
+            "shares_diluted_latest",
+            "equity_latest",
+        )
         for symbol in {sym.upper() for sym in all_symbols}:
             metrics = fundamentals.get(symbol)
             if not metrics:
@@ -1926,7 +2132,9 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
             if computed_pb is not None:
                 pb_values.append(computed_pb)
 
-            pe_value = computed_pe if computed_pe is not None else _safe_float(quote.get("pe"))
+            pe_value = (
+                computed_pe if computed_pe is not None else _safe_float(quote.get("pe"))
+            )
             ratio = quote.get("priceToSalesRatioTTM")
             if ratio is None:
                 ratio = quote.get("priceToSalesRatio")
@@ -1936,12 +2144,24 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
             symbol_rows.append(
                 {
                     "symbol": symbol,
-                    "price": round(price, 2) if isinstance(price, (int, float)) else None,
-                    "change_pct": round(change_val, 2) if isinstance(change_val, (int, float)) else None,
-                    "pe": round(pe_value, 2) if isinstance(pe_value, (int, float)) else None,
-                    "ps": round(ps_value, 2) if isinstance(ps_value, (int, float)) else None,
-                    "pb": round(pb_value, 2) if isinstance(pb_value, (int, float)) else None,
-                    "market_cap": round(market_cap, 2) if isinstance(market_cap, (int, float)) else None,
+                    "price": round(price, 2)
+                    if isinstance(price, (int, float))
+                    else None,
+                    "change_pct": round(change_val, 2)
+                    if isinstance(change_val, (int, float))
+                    else None,
+                    "pe": round(pe_value, 2)
+                    if isinstance(pe_value, (int, float))
+                    else None,
+                    "ps": round(ps_value, 2)
+                    if isinstance(ps_value, (int, float))
+                    else None,
+                    "pb": round(pb_value, 2)
+                    if isinstance(pb_value, (int, float))
+                    else None,
+                    "market_cap": round(market_cap, 2)
+                    if isinstance(market_cap, (int, float))
+                    else None,
                     "source": quote_source,
                 }
             )
@@ -1987,7 +2207,9 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
                 for payload in quotes.values()
             }
         )
-        fallback_label = " + ".join(fallback_providers) if fallback_providers else "价格兜底"
+        fallback_label = (
+            " + ".join(fallback_providers) if fallback_providers else "价格兜底"
+        )
         issue_items: List[str] = []
         if missing_cik:
             issue_items.append(f"缺少CIK: {', '.join(sorted(missing_cik))}")
@@ -2004,7 +2226,9 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
             detail_parts.append("; ".join(errors))
         if issue_items:
             if len(issue_items) > 2:
-                detail_parts.append("; ".join(issue_items[:2]) + f" 等 {len(issue_items)} 项")
+                detail_parts.append(
+                    "; ".join(issue_items[:2]) + f" 等 {len(issue_items)} 项"
+                )
             else:
                 detail_parts.append("; ".join(issue_items))
         if detail_parts:
@@ -2046,7 +2270,9 @@ def _fetch_theme_metrics_from_fmp(api_keys: Dict[str, Any]) -> Tuple[Dict[str, A
 def _resolve_index_quote(symbol: str, api_keys: Dict[str, Any]) -> _QuoteSnapshot:
     order_env = os.getenv("QUOTE_ORDER", "")
     default_order = ["stooq", "financial_modeling_prep", "twelve_data", "alpha_vantage"]
-    wished = [item.strip().lower() for item in order_env.split(",") if item.strip()] or default_order
+    wished = [
+        item.strip().lower() for item in order_env.split(",") if item.strip()
+    ] or default_order
     fmp_key = _coerce_api_key(api_keys.get("financial_modeling_prep"))
     twelve_key = _coerce_api_key(api_keys.get("twelve_data"))
     alpha_key = _coerce_api_key(api_keys.get("alpha_vantage"))
@@ -2059,13 +2285,25 @@ def _resolve_index_quote(symbol: str, api_keys: Dict[str, Any]) -> _QuoteSnapsho
             fetchers.append(("stooq", lambda: _fetch_quote_from_stooq(symbol)))
             added.add("stooq")
         elif name == "financial_modeling_prep" and fmp_key and "fmp" not in added:
-            fetchers.append(("fmp", lambda key=fmp_key: _fetch_quote_from_fmp(symbol, key)))
+            fetchers.append(
+                ("fmp", lambda key=fmp_key: _fetch_quote_from_fmp(symbol, key))
+            )
             added.add("fmp")
         elif name == "twelve_data" and twelve_key and "twelve_data" not in added:
-            fetchers.append(("twelve_data", lambda key=twelve_key: _fetch_quote_from_twelve_data(symbol, key)))
+            fetchers.append(
+                (
+                    "twelve_data",
+                    lambda key=twelve_key: _fetch_quote_from_twelve_data(symbol, key),
+                )
+            )
             added.add("twelve_data")
         elif name == "alpha_vantage" and alpha_key and "alpha_vantage" not in added:
-            fetchers.append(("alpha_vantage", lambda key=alpha_key: _fetch_quote_from_alpha(symbol, key)))
+            fetchers.append(
+                (
+                    "alpha_vantage",
+                    lambda key=alpha_key: _fetch_quote_from_alpha(symbol, key),
+                )
+            )
             added.add("alpha_vantage")
 
     if allow_yahoo:
@@ -2075,8 +2313,16 @@ def _resolve_index_quote(symbol: str, api_keys: Dict[str, Any]) -> _QuoteSnapsho
 
 def _resolve_equity_quote(symbol: str, api_keys: Dict[str, Any]) -> _QuoteSnapshot:
     order_env = os.getenv("QUOTE_ORDER", "")
-    default_order = ["financial_modeling_prep", "twelve_data", "stooq", "alpaca", "alpha_vantage"]
-    wished = [item.strip().lower() for item in order_env.split(",") if item.strip()] or default_order
+    default_order = [
+        "financial_modeling_prep",
+        "twelve_data",
+        "stooq",
+        "alpaca",
+        "alpha_vantage",
+    ]
+    wished = [
+        item.strip().lower() for item in order_env.split(",") if item.strip()
+    ] or default_order
 
     fmp_key = _coerce_api_key(api_keys.get("financial_modeling_prep"))
     twelve_key = _coerce_api_key(api_keys.get("twelve_data"))
@@ -2089,21 +2335,39 @@ def _resolve_equity_quote(symbol: str, api_keys: Dict[str, Any]) -> _QuoteSnapsh
     added: set[str] = set()
     for name in wished:
         if name == "financial_modeling_prep" and fmp_key and "fmp" not in added:
-            fetchers.append(("fmp", lambda key=fmp_key: _fetch_quote_from_fmp(symbol, key)))
+            fetchers.append(
+                ("fmp", lambda key=fmp_key: _fetch_quote_from_fmp(symbol, key))
+            )
             added.add("fmp")
         elif name == "twelve_data" and twelve_key and "twelve_data" not in added:
-            fetchers.append(("twelve_data", lambda key=twelve_key: _fetch_quote_from_twelve_data(symbol, key)))
+            fetchers.append(
+                (
+                    "twelve_data",
+                    lambda key=twelve_key: _fetch_quote_from_twelve_data(symbol, key),
+                )
+            )
             added.add("twelve_data")
         elif name == "stooq" and "stooq" not in added:
             fetchers.append(("stooq", lambda: _fetch_quote_from_stooq(symbol)))
             added.add("stooq")
-        elif name == "alpaca" and alpaca_key and alpaca_secret and "alpaca" not in added:
+        elif (
+            name == "alpaca" and alpaca_key and alpaca_secret and "alpaca" not in added
+        ):
             fetchers.append(
-                ("alpaca", lambda key=alpaca_key, secret=alpaca_secret: _fetch_quote_from_alpaca(symbol, key, secret))
+                (
+                    "alpaca",
+                    lambda key=alpaca_key,
+                    secret=alpaca_secret: _fetch_quote_from_alpaca(symbol, key, secret),
+                )
             )
             added.add("alpaca")
         elif name == "alpha_vantage" and alpha_key and "alpha_vantage" not in added:
-            fetchers.append(("alpha_vantage", lambda key=alpha_key: _fetch_quote_from_alpha(symbol, key)))
+            fetchers.append(
+                (
+                    "alpha_vantage",
+                    lambda key=alpha_key: _fetch_quote_from_alpha(symbol, key),
+                )
+            )
             added.add("alpha_vantage")
 
     if allow_yahoo:
@@ -2111,7 +2375,9 @@ def _resolve_equity_quote(symbol: str, api_keys: Dict[str, Any]) -> _QuoteSnapsh
     return _attempt_quote(fetchers)
 
 
-def _fetch_market_snapshot_real(api_keys: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], FetchStatus]:
+def _fetch_market_snapshot_real(
+    api_keys: Dict[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], FetchStatus]:
     errors: List[str] = []
     indices: List[Dict[str, Any]] = []
     index_sources: Dict[str, str] = {}
@@ -2124,7 +2390,13 @@ def _fetch_market_snapshot_real(api_keys: Dict[str, Any]) -> Tuple[Optional[Dict
             errors.append(f"{label}: {exc}")
             continue
         latest_date = latest_date or snapshot.day
-        indices.append({"symbol": label, "close": round(snapshot.close, 2), "change_pct": round(snapshot.change_pct, 2)})
+        indices.append(
+            {
+                "symbol": label,
+                "close": round(snapshot.close, 2),
+                "change_pct": round(snapshot.change_pct, 2),
+            }
+        )
         index_sources[label] = snapshot.source
 
     sectors: List[Dict[str, Any]] = []
@@ -2135,12 +2407,16 @@ def _fetch_market_snapshot_real(api_keys: Dict[str, Any]) -> Tuple[Optional[Dict
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{name}: {exc}")
             continue
-        sectors.append({"name": name, "performance": round(1 + snapshot.change_pct / 100, 3)})
+        sectors.append(
+            {"name": name, "performance": round(1 + snapshot.change_pct / 100, 3)}
+        )
         sector_sources[name] = snapshot.source
 
     if not indices:
         detail = "; ".join(errors) if errors else "无可用行情来源"
-        return None, FetchStatus(name="market", ok=False, message=f"美股行情获取失败: {detail}")
+        return None, FetchStatus(
+            name="market", ok=False, message=f"美股行情获取失败: {detail}"
+        )
 
     market = {
         "date": latest_date or _current_trading_day(),
@@ -2150,7 +2426,9 @@ def _fetch_market_snapshot_real(api_keys: Dict[str, Any]) -> Tuple[Optional[Dict
 
     parts: List[str] = []
     if index_sources:
-        formatted = ", ".join(f"{symbol}:{src}" for symbol, src in index_sources.items())
+        formatted = ", ".join(
+            f"{symbol}:{src}" for symbol, src in index_sources.items()
+        )
         parts.append(f"指数来源 {formatted}")
     if sector_sources:
         formatted = ", ".join(f"{name}:{src}" for name, src in sector_sources.items())
@@ -2161,13 +2439,19 @@ def _fetch_market_snapshot_real(api_keys: Dict[str, Any]) -> Tuple[Optional[Dict
     return market, FetchStatus(name="market", ok=True, message=message)
 
 
-def _fetch_events_real(trading_day: str, api_keys: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], FetchStatus]:
+def _fetch_events_real(
+    trading_day: str, api_keys: Dict[str, Any]
+) -> Tuple[List[Dict[str, Any]], FetchStatus]:
     credential = api_keys.get("trading_economics", TE_GUEST_CREDENTIAL)
     params = {"c": credential, "format": "json"}
     try:
-        payload = _request_json("https://api.tradingeconomics.com/calendar", params=params)
+        payload = _request_json(
+            "https://api.tradingeconomics.com/calendar", params=params
+        )
     except Exception as exc:  # noqa: BLE001
-        return [], FetchStatus(name="events", ok=False, message=f"Trading Economics 请求失败: {exc}")
+        return [], FetchStatus(
+            name="events", ok=False, message=f"Trading Economics 请求失败: {exc}"
+        )
 
     base_date = datetime.strptime(trading_day, "%Y-%m-%d").date()
     window_end = base_date + timedelta(days=5)
@@ -2198,15 +2482,23 @@ def _fetch_events_real(trading_day: str, api_keys: Dict[str, Any]) -> Tuple[List
             break
 
     if not events:
-        return [], FetchStatus(name="events", ok=False, message="Trading Economics 未返回可用事件")
+        return [], FetchStatus(
+            name="events", ok=False, message="Trading Economics 未返回可用事件"
+        )
 
-    return events, FetchStatus(name="events", ok=True, message="Trading Economics 事件日历已获取")
+    return events, FetchStatus(
+        name="events", ok=True, message="Trading Economics 事件日历已获取"
+    )
 
 
-def _fetch_finnhub_earnings(trading_day: str, api_keys: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], FetchStatus]:
+def _fetch_finnhub_earnings(
+    trading_day: str, api_keys: Dict[str, Any]
+) -> Tuple[List[Dict[str, Any]], FetchStatus]:
     api_key = api_keys.get("finnhub")
     if not api_key:
-        return [], FetchStatus(name="finnhub_earnings", ok=False, message="缺少 Finnhub API Key")
+        return [], FetchStatus(
+            name="finnhub_earnings", ok=False, message="缺少 Finnhub API Key"
+        )
 
     start = datetime.strptime(trading_day, "%Y-%m-%d").date()
     end = start + timedelta(days=5)
@@ -2216,9 +2508,13 @@ def _fetch_finnhub_earnings(trading_day: str, api_keys: Dict[str, Any]) -> Tuple
         "token": api_key,
     }
     try:
-        payload = _request_json("https://finnhub.io/api/v1/calendar/earnings", params=params)
+        payload = _request_json(
+            "https://finnhub.io/api/v1/calendar/earnings", params=params
+        )
     except Exception as exc:  # noqa: BLE001
-        return [], FetchStatus(name="finnhub_earnings", ok=False, message=f"Finnhub 请求失败: {exc}")
+        return [], FetchStatus(
+            name="finnhub_earnings", ok=False, message=f"Finnhub 请求失败: {exc}"
+        )
 
     items = payload.get("earningsCalendar") or []
     events: List[Dict[str, Any]] = []
@@ -2263,10 +2559,14 @@ def _fetch_finnhub_earnings(trading_day: str, api_keys: Dict[str, Any]) -> Tuple
         )
 
     if not events:
-        return [], FetchStatus(name="finnhub_earnings", ok=False, message="Finnhub 未返回财报事件")
+        return [], FetchStatus(
+            name="finnhub_earnings", ok=False, message="Finnhub 未返回财报事件"
+        )
 
     events.sort(key=lambda item: item["date"])
-    return events, FetchStatus(name="finnhub_earnings", ok=True, message="Finnhub 财报日历已获取")
+    return events, FetchStatus(
+        name="finnhub_earnings", ok=True, message="Finnhub 财报日历已获取"
+    )
 
 
 def _simulate_market_snapshot(trading_day: str) -> Tuple[Dict[str, Any], FetchStatus]:
@@ -2281,15 +2581,27 @@ def _simulate_market_snapshot(trading_day: str) -> Tuple[Dict[str, Any], FetchSt
     market = {
         "date": trading_day,
         "indices": [
-            {"symbol": "SPX", "close": round(index_level, 2), "change_pct": round((seed % 5 - 2) * 0.3, 2)},
-            {"symbol": "NDX", "close": round(index_level * 1.2, 2), "change_pct": round((seed % 3 - 1) * 0.4, 2)},
+            {
+                "symbol": "SPX",
+                "close": round(index_level, 2),
+                "change_pct": round((seed % 5 - 2) * 0.3, 2),
+            },
+            {
+                "symbol": "NDX",
+                "close": round(index_level * 1.2, 2),
+                "change_pct": round((seed % 3 - 1) * 0.4, 2),
+            },
         ],
         "sectors": [
             {"name": "AI", "performance": round(ai_sector_perf, 2)},
             {"name": "Defensive", "performance": round(defensive_sector_perf, 2)},
         ],
         "hk_indices": [
-            {"symbol": "HSI", "close": 18000 + seed % 200, "change_pct": round(hk_change, 2)},
+            {
+                "symbol": "HSI",
+                "close": 18000 + seed % 200,
+                "change_pct": round(hk_change, 2),
+            },
         ],
         "themes": {
             "ai": {
@@ -2336,7 +2648,10 @@ def _simulate_events(trading_day: str) -> Tuple[List[Dict[str, Any]], FetchStatu
         },
         {
             "title": "大型科技财报",
-            "date": (today.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=2)).strftime("%Y-%m-%d"),
+            "date": (
+                today.replace(hour=0, minute=0, second=0, microsecond=0)
+                + timedelta(days=2)
+            ).strftime("%Y-%m-%d"),
             "impact": "medium",
         },
     ]
@@ -2358,7 +2673,9 @@ def run(argv: Optional[List[str]] = None) -> int:
     trading_day = _current_trading_day()
     logger = setup_logger("etl", trading_day=trading_day)
     log(logger, logging.INFO, "etl_start", force=args.force)
-    run_meta.record_step(OUT_DIR, "etl", "started", trading_day=trading_day, force=args.force)
+    run_meta.record_step(
+        OUT_DIR, "etl", "started", trading_day=trading_day, force=args.force
+    )
 
     raw_market_path = OUT_DIR / "raw_market.json"
     raw_events_path = OUT_DIR / "raw_events.json"
@@ -2367,7 +2684,11 @@ def run(argv: Optional[List[str]] = None) -> int:
 
     if not args.force:
         skip_run = marker.exists()
-        if skip_run and not (raw_market_path.exists() and raw_events_path.exists() and status_path.exists()):
+        if skip_run and not (
+            raw_market_path.exists()
+            and raw_events_path.exists()
+            and status_path.exists()
+        ):
             skip_run = False
         if skip_run and status_path.exists():
             try:
@@ -2433,8 +2754,12 @@ def run(argv: Optional[List[str]] = None) -> int:
 
     theme_metrics: Dict[str, Any] = {}
     if market_data:
-        sectors = market_data.get("sectors", []) if isinstance(market_data, dict) else []
-        ai_perf = next((s.get("performance") for s in sectors if s.get("name") == "AI"), None)
+        sectors = (
+            market_data.get("sectors", []) if isinstance(market_data, dict) else []
+        )
+        ai_perf = next(
+            (s.get("performance") for s in sectors if s.get("name") == "AI"), None
+        )
         if ai_perf is not None:
             theme_metrics.setdefault("ai", {})["performance"] = ai_perf
 
@@ -2462,10 +2787,20 @@ def run(argv: Optional[List[str]] = None) -> int:
         sentiment_data.update(put_call_payload)
     else:
         overall_ok = False
-        previous_put_call = previous_sentiment.get("put_call") if isinstance(previous_sentiment, dict) else None
+        previous_put_call = (
+            previous_sentiment.get("put_call")
+            if isinstance(previous_sentiment, dict)
+            else None
+        )
         if isinstance(previous_put_call, dict):
             sentiment_data["put_call"] = previous_put_call
-            statuses.append(FetchStatus(name="cboe_put_call_fallback", ok=True, message="使用上一期 Put/Call 数据"))
+            statuses.append(
+                FetchStatus(
+                    name="cboe_put_call_fallback",
+                    ok=True,
+                    message="使用上一期 Put/Call 数据",
+                )
+            )
 
     aaii_payload, aaii_status = aaii_sentiment.fetch()
     statuses.append(aaii_status)
@@ -2473,10 +2808,20 @@ def run(argv: Optional[List[str]] = None) -> int:
         sentiment_data.update(aaii_payload)
     else:
         overall_ok = False
-        previous_aaii = previous_sentiment.get("aaii") if isinstance(previous_sentiment, dict) else None
+        previous_aaii = (
+            previous_sentiment.get("aaii")
+            if isinstance(previous_sentiment, dict)
+            else None
+        )
         if isinstance(previous_aaii, dict):
             sentiment_data["aaii"] = previous_aaii
-            statuses.append(FetchStatus(name="aaii_sentiment_fallback", ok=True, message="使用上一期 AAII 数据"))
+            statuses.append(
+                FetchStatus(
+                    name="aaii_sentiment_fallback",
+                    ok=True,
+                    message="使用上一期 AAII 数据",
+                )
+            )
 
     spot_price, spot_status = _fetch_coinbase_spot()
     statuses.append(spot_status)
@@ -2490,7 +2835,11 @@ def run(argv: Optional[List[str]] = None) -> int:
         basis, basis_status = _fetch_okx_basis(spot_price)
         statuses.append(basis_status)
     else:
-        statuses.append(FetchStatus(name="okx_basis", ok=False, message="缺少现货价格，无法计算基差"))
+        statuses.append(
+            FetchStatus(
+                name="okx_basis", ok=False, message="缺少现货价格，无法计算基差"
+            )
+        )
 
     etf_flow, flow_status = _fetch_btc_etf_flow(api_keys)
     statuses.append(flow_status)
@@ -2510,11 +2859,18 @@ def run(argv: Optional[List[str]] = None) -> int:
             overall_ok = False
 
     btc_data: Dict[str, Any]
-    if spot_price is not None and funding_rate is not None and basis is not None and etf_flow is not None:
+    if (
+        spot_price is not None
+        and funding_rate is not None
+        and basis is not None
+        and etf_flow is not None
+    ):
         btc_data = {
             "date": trading_day,
             "spot_price_usd": round(spot_price, 2),
-            "perpetual_price_usd": round(spot_price * (1 + basis), 2) if basis is not None else None,
+            "perpetual_price_usd": round(spot_price * (1 + basis), 2)
+            if basis is not None
+            else None,
             "etf_net_inflow_musd": round(etf_flow, 2),
             "funding_rate": round(funding_rate, 6),
             "futures_basis": round(basis, 6),
@@ -2534,12 +2890,18 @@ def run(argv: Optional[List[str]] = None) -> int:
     else:
         finnhub_events: List[Dict[str, Any]] = []
         if api_keys.get("finnhub"):
-            finnhub_events, finnhub_status = _fetch_finnhub_earnings(trading_day, api_keys)
+            finnhub_events, finnhub_status = _fetch_finnhub_earnings(
+                trading_day, api_keys
+            )
             statuses.append(finnhub_status)
             if finnhub_status.ok:
                 events.extend(finnhub_events)
         elif api_keys:
-            statuses.append(FetchStatus(name="finnhub_earnings", ok=False, message="缺少 Finnhub API Key"))
+            statuses.append(
+                FetchStatus(
+                    name="finnhub_earnings", ok=False, message="缺少 Finnhub API Key"
+                )
+            )
 
     ai_updates: List[Dict[str, Any]] = []
     if ai_feeds:
@@ -2568,7 +2930,12 @@ def run(argv: Optional[List[str]] = None) -> int:
         json.dump(market_payload, f, ensure_ascii=False, indent=2)
 
     with raw_events_path.open("w", encoding="utf-8") as f:
-        json.dump({"events": events, "ai_updates": ai_updates}, f, ensure_ascii=False, indent=2)
+        json.dump(
+            {"events": events, "ai_updates": ai_updates},
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
 
     status_payload = {
         "date": trading_day,
@@ -2580,10 +2947,22 @@ def run(argv: Optional[List[str]] = None) -> int:
 
     for entry in statuses:
         level = logging.INFO if entry.ok else logging.WARNING
-        log(logger, level, "etl_source_status", source=entry.name, ok=entry.ok, detail=entry.message)
+        log(
+            logger,
+            level,
+            "etl_source_status",
+            source=entry.name,
+            ok=entry.ok,
+            detail=entry.message,
+        )
 
     if not status_payload["ok"]:
-        log(logger, logging.WARNING, "etl_degraded", reason="one or more fetchers failed")
+        log(
+            logger,
+            logging.WARNING,
+            "etl_degraded",
+            reason="one or more fetchers failed",
+        )
 
     marker.touch(exist_ok=True)
 

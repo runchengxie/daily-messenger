@@ -1,4 +1,5 @@
 """Fetch AAII weekly investor sentiment survey results."""
+
 from __future__ import annotations
 
 import datetime as dt
@@ -9,7 +10,10 @@ from typing import Dict, Optional, Tuple
 
 import requests
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+)
 REQUEST_TIMEOUT = 20
 RSS_URL = "https://insights.aaii.com/feed"
 
@@ -87,17 +91,23 @@ def fetch() -> Tuple[Dict[str, Dict[str, object]], FetchStatus]:
     session = _init_session()
     link = _resolve_latest_story(session)
     if not link:
-        return {}, FetchStatus(name="aaii_sentiment", ok=False, message="未能定位最新情绪文章")
+        return {}, FetchStatus(
+            name="aaii_sentiment", ok=False, message="未能定位最新情绪文章"
+        )
 
     try:
         response = session.get(link, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
     except Exception as exc:  # noqa: BLE001
-        return {}, FetchStatus(name="aaii_sentiment", ok=False, message=f"AAII 请求失败: {exc}")
+        return {}, FetchStatus(
+            name="aaii_sentiment", ok=False, message=f"AAII 请求失败: {exc}"
+        )
 
     metrics = _parse_article(response.text)
     if metrics is None:
-        return {}, FetchStatus(name="aaii_sentiment", ok=False, message="AAII 页面缺少情绪百分比")
+        return {}, FetchStatus(
+            name="aaii_sentiment", ok=False, message="AAII 页面缺少情绪百分比"
+        )
 
     week = _parse_week(response.text) or dt.date.today().isoformat()
 
@@ -110,4 +120,6 @@ def fetch() -> Tuple[Dict[str, Dict[str, object]], FetchStatus]:
         }
     }
 
-    return payload, FetchStatus(name="aaii_sentiment", ok=True, message="AAII 情绪数据已更新")
+    return payload, FetchStatus(
+        name="aaii_sentiment", ok=True, message="AAII 情绪数据已更新"
+    )

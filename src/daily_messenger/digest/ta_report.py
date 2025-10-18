@@ -6,6 +6,7 @@ This module keeps dependencies lightweight by relying on the standard library on
 It pulls OANDA midpoint candles, computes SMA/RSI/ATR plus daily pivot levels,
 and renders a Markdown report that mirrors the existing digest structure.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -97,7 +98,11 @@ def fetch_candles(
     """
 
     url = f"https://api-fxpractice.oanda.com/v3/instruments/{instrument}/candles"
-    params: dict[str, str | int] = {"granularity": granularity, "count": count, "price": "M"}
+    params: dict[str, str | int] = {
+        "granularity": granularity,
+        "count": count,
+        "price": "M",
+    }
     if granularity.startswith("D") or granularity in {"W", "M"}:
         if alignment_timezone:
             params["alignmentTimezone"] = alignment_timezone
@@ -252,7 +257,9 @@ def _is_finite(value: float) -> bool:
     return not math.isnan(value) and not math.isinf(value)
 
 
-def _latest_price_from_intraday(intraday: dict[str, Sequence[Candle]], fallback: float) -> float:
+def _latest_price_from_intraday(
+    intraday: dict[str, Sequence[Candle]], fallback: float
+) -> float:
     for granularity in ("M5", "M15", "H1", "H4"):
         candles = intraday.get(granularity)
         if candles:
@@ -346,14 +353,19 @@ def generate_report_markdown(
     ref_price = _latest_price_from_intraday(intraday, last_price)
     monitored_levels = ["S2", "S1", "P", "R1", "R2", "prev_low", "prev_high"]
     pivot_hits = [
-        f"接近 {name}（{_format_price(pivot_levels[name])}），参考价 { _format_price(ref_price)}"
+        f"接近 {name}（{_format_price(pivot_levels[name])}），参考价 {_format_price(ref_price)}"
         for name in monitored_levels
         if _near_level(ref_price, pivot_levels[name], cfg.thresholds.near_pct)
     ]
 
     intraday_lines = _render_intraday_lines(intraday)
     suggestions = _build_suggestions(
-        rsi_value, sma_fast_value, sma_slow_value, last_price, cfg.thresholds, pivot_hits
+        rsi_value,
+        sma_fast_value,
+        sma_slow_value,
+        last_price,
+        cfg.thresholds,
+        pivot_hits,
     )
 
     report_lines: List[str] = []
@@ -369,7 +381,9 @@ def generate_report_markdown(
     )
     rsi_display = f"{rsi_value:.1f}" if _is_finite(rsi_value) else "N/A"
     atr_display = f"{atr_value:.2f}" if _is_finite(atr_value) else "N/A"
-    report_lines.append(f"- RSI{cfg.windows.rsi}：{rsi_display} | ATR{cfg.windows.atr}：{atr_display}")
+    report_lines.append(
+        f"- RSI{cfg.windows.rsi}：{rsi_display} | ATR{cfg.windows.atr}：{atr_display}"
+    )
     report_lines.append("")
     report_lines.append("## 支撑与压力")
     report_lines.append(f"- 枢轴点 P: {_format_price(pivot_levels['P'])}")
@@ -397,9 +411,13 @@ def generate_report_markdown(
         report_lines.append(f"- {suggestion}")
 
     report_lines.append("")
-    report_lines.append("> 注：外汇/贵金属为场外报价，OANDA 的 volume 更接近 tick 计数，非全市场成交量。")
+    report_lines.append(
+        "> 注：外汇/贵金属为场外报价，OANDA 的 volume 更接近 tick 计数，非全市场成交量。"
+    )
     report_lines.append("")
-    report_lines.append("_数据源：OANDA Practice（midpoint）；计算口径：纽约 17:00 切日。_")
+    report_lines.append(
+        "_数据源：OANDA Practice（midpoint）；计算口径：纽约 17:00 切日。_"
+    )
     report_lines.append("")
     return "\n".join(report_lines)
 
@@ -437,7 +455,8 @@ def _load_config(path: Path) -> TAReportConfig:
     )
     return TAReportConfig(
         instrument=str(raw["instrument"]),
-        alignment_timezone=raw.get("alignmentTimezone") or raw.get("alignment_timezone"),
+        alignment_timezone=raw.get("alignmentTimezone")
+        or raw.get("alignment_timezone"),
         daily_alignment=raw.get("dailyAlignment") or raw.get("daily_alignment"),
         windows=windows,
         thresholds=thresholds,
@@ -452,7 +471,11 @@ def _write_report(path: Path, content: str) -> None:
 
 def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate OANDA-based TA report")
-    parser.add_argument("--config", default="config/ta_xau.yml", help="配置文件路径（默认 config/ta_xau.yml）")
+    parser.add_argument(
+        "--config",
+        default="config/ta_xau.yml",
+        help="配置文件路径（默认 config/ta_xau.yml）",
+    )
     args = parser.parse_args(argv)
 
     config_path = Path(args.config)
@@ -478,15 +501,21 @@ def run(argv: list[str] | None = None) -> int:
             token,
             count=400,
             alignment_timezone=cfg.alignment_timezone,
-            daily_alignment=int(cfg.daily_alignment) if cfg.daily_alignment is not None else None,
+            daily_alignment=int(cfg.daily_alignment)
+            if cfg.daily_alignment is not None
+            else None,
         )
         intraday: dict[str, List[Candle]] = {}
         if cfg.report.include_intraday:
             for gran in cfg.report.intraday_granularities:
                 try:
-                    intraday[gran] = fetch_candles(cfg.instrument, gran, token, count=200)
+                    intraday[gran] = fetch_candles(
+                        cfg.instrument, gran, token, count=200
+                    )
                 except Exception as exc:  # pragma: no cover - network edge case
-                    print(f"获取 {cfg.instrument} {gran} 数据失败：{exc}", file=sys.stderr)
+                    print(
+                        f"获取 {cfg.instrument} {gran} 数据失败：{exc}", file=sys.stderr
+                    )
         report_text = generate_report_markdown(daily_candles, intraday, cfg)
     except requests.HTTPError as exc:
         print(f"请求 OANDA API 失败：{exc}", file=sys.stderr)

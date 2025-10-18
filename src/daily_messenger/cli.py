@@ -34,7 +34,9 @@ def _ensure_run_id() -> None:
     os.environ.setdefault("DM_RUN_ID", uuid.uuid4().hex)
 
 
-def _execute_step(name: str, func, args: Optional[List[str]], logger: logging.Logger) -> int:
+def _execute_step(
+    name: str, func, args: Optional[List[str]], logger: logging.Logger
+) -> int:
     log(logger, logging.INFO, "cli_step_start", step=name, argv=args or [])
     code = func(args)
     level = logging.INFO if code == 0 else logging.ERROR
@@ -48,27 +50,53 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="dm", description="Daily Messenger CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    run_parser = subparsers.add_parser("run", help="Run ETL, scoring, and digest sequentially")
+    run_parser = subparsers.add_parser(
+        "run", help="Run ETL, scoring, and digest sequentially"
+    )
     run_parser.add_argument("--date", help="Override trading day (YYYY-MM-DD)")
-    run_parser.add_argument("--force-fetch", action="store_true", help="Force refresh ETL step")
-    run_parser.add_argument("--force-score", action="store_true", help="Force recompute scoring step")
-    run_parser.add_argument("--degraded", action="store_true", help="Render digest in degraded mode")
-    run_parser.add_argument("--strict", action="store_true", help="Enable STRICT mode during scoring")
-    run_parser.add_argument("--disable-throttle", action="store_true", help="Disable network throttling helpers")
+    run_parser.add_argument(
+        "--force-fetch", action="store_true", help="Force refresh ETL step"
+    )
+    run_parser.add_argument(
+        "--force-score", action="store_true", help="Force recompute scoring step"
+    )
+    run_parser.add_argument(
+        "--degraded", action="store_true", help="Render digest in degraded mode"
+    )
+    run_parser.add_argument(
+        "--strict", action="store_true", help="Enable STRICT mode during scoring"
+    )
+    run_parser.add_argument(
+        "--disable-throttle",
+        action="store_true",
+        help="Disable network throttling helpers",
+    )
 
     fetch_parser = subparsers.add_parser("fetch", help="Run ETL only")
     fetch_parser.add_argument("--date", help="Override trading day (YYYY-MM-DD)")
-    fetch_parser.add_argument("--force", action="store_true", help="Force refresh ETL step")
-    fetch_parser.add_argument("--disable-throttle", action="store_true", help="Disable network throttling helpers")
+    fetch_parser.add_argument(
+        "--force", action="store_true", help="Force refresh ETL step"
+    )
+    fetch_parser.add_argument(
+        "--disable-throttle",
+        action="store_true",
+        help="Disable network throttling helpers",
+    )
 
     score_parser = subparsers.add_parser("score", help="Run scoring only")
     score_parser.add_argument("--date", help="Override trading day (YYYY-MM-DD)")
-    score_parser.add_argument("--force", action="store_true", help="Force recompute scoring")
-    score_parser.add_argument("--strict", action="store_true", help="Enable STRICT mode")
+    score_parser.add_argument(
+        "--force", action="store_true", help="Force recompute scoring"
+    )
+    score_parser.add_argument(
+        "--strict", action="store_true", help="Enable STRICT mode"
+    )
 
     digest_parser = subparsers.add_parser("digest", help="Render digest only")
     digest_parser.add_argument("--date", help="Override trading day (YYYY-MM-DD)")
-    digest_parser.add_argument("--degraded", action="store_true", help="Render in degraded mode")
+    digest_parser.add_argument(
+        "--degraded", action="store_true", help="Render in degraded mode"
+    )
 
     args = parser.parse_args(argv)
     logger = setup_logger("cli", command=args.command)
@@ -87,7 +115,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return code
 
     if args.command == "score":
-        with _env_override("DM_OVERRIDE_DATE", args.date), _env_override("STRICT", "1" if args.strict else None):
+        with (
+            _env_override("DM_OVERRIDE_DATE", args.date),
+            _env_override("STRICT", "1" if args.strict else None),
+        ):
             step_args = ["--force"] if args.force else []
             code = _execute_step("scoring", run_scores.run, step_args, logger)
         return code

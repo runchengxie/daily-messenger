@@ -55,23 +55,43 @@ def test_build_actions_generates_expected_labels():
         name="ai",
         label="AI",
         total=thresholds["action_add"] + 5,
-        breakdown={"fundamental": 80, "valuation": 70, "sentiment": 60, "liquidity": 65, "event": 55},
+        breakdown={
+            "fundamental": 80,
+            "valuation": 70,
+            "sentiment": 60,
+            "liquidity": 65,
+            "event": 55,
+        },
     )
     neutral_theme = scoring.ThemeScore(
         name="btc",
         label="BTC",
         total=(thresholds["action_add"] + thresholds["action_trim"]) / 2,
-        breakdown={"fundamental": 60, "valuation": 55, "sentiment": 50, "liquidity": 45, "event": 65},
+        breakdown={
+            "fundamental": 60,
+            "valuation": 55,
+            "sentiment": 50,
+            "liquidity": 45,
+            "event": 65,
+        },
     )
     degraded_theme = scoring.ThemeScore(
         name="other",
         label="Other",
         total=40,
-        breakdown={"fundamental": 50, "valuation": 50, "sentiment": 50, "liquidity": 50, "event": 50},
+        breakdown={
+            "fundamental": 50,
+            "valuation": 50,
+            "sentiment": 50,
+            "liquidity": 50,
+            "event": 50,
+        },
         degraded=True,
     )
 
-    actions = scoring._build_actions([high_theme, neutral_theme, degraded_theme], thresholds)
+    actions = scoring._build_actions(
+        [high_theme, neutral_theme, degraded_theme], thresholds
+    )
 
     assert actions[0]["action"] == "增持"
     assert actions[1]["action"] == "观察"
@@ -87,7 +107,9 @@ def _setup_scoring_environment(
     monkeypatch.setattr(scoring, "OUT_DIR", out_dir)
     monkeypatch.setattr(scoring, "STATE_DIR", state_dir)
     monkeypatch.setattr(scoring, "CONFIG_PATH", config_path)
-    monkeypatch.setattr(scoring, "SENTIMENT_HISTORY_PATH", state_dir / "sentiment_history.json")
+    monkeypatch.setattr(
+        scoring, "SENTIMENT_HISTORY_PATH", state_dir / "sentiment_history.json"
+    )
     monkeypatch.setattr(scoring, "SCORE_HISTORY_PATH", state_dir / "score_history.json")
     monkeypatch.setattr(scoring, "_current_trading_day", lambda: trading_day)
     return out_dir, state_dir, config_path
@@ -104,7 +126,12 @@ def _sample_raw_market() -> dict:
             "indices": [{"symbol": "NDX", "change_pct": 0.01}],
             "sectors": [{"name": "AI", "performance": 1.6}],
             "themes": {
-                "ai": {"performance": 1.6, "change_pct": 1.0, "avg_pe": 50.0, "avg_ps": 10.0},
+                "ai": {
+                    "performance": 1.6,
+                    "change_pct": 1.0,
+                    "avg_pe": 50.0,
+                    "avg_ps": 10.0,
+                },
                 "magnificent7": {
                     "change_pct": 0.8,
                     "avg_pe": 30.0,
@@ -125,7 +152,9 @@ def _sample_raw_market() -> dict:
     }
 
 
-def _sample_config(weights: dict, thresholds: dict, *, version: int = 1, changed_at: str = "2024-04-01") -> dict:
+def _sample_config(
+    weights: dict, thresholds: dict, *, version: int = 1, changed_at: str = "2024-04-01"
+) -> dict:
     base = {
         "version": version,
         "changed_at": changed_at,
@@ -158,9 +187,13 @@ def _sample_config(weights: dict, thresholds: dict, *, version: int = 1, changed
     return base
 
 
-def test_run_skips_when_state_exists_unless_forced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_skips_when_state_exists_unless_forced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     trading_day = "2024-04-05"
-    out_dir, state_dir, config_path = _setup_scoring_environment(tmp_path, monkeypatch, trading_day)
+    out_dir, state_dir, config_path = _setup_scoring_environment(
+        tmp_path, monkeypatch, trading_day
+    )
 
     config = _sample_config(
         weights={
@@ -198,9 +231,13 @@ def test_run_skips_when_state_exists_unless_forced(tmp_path: Path, monkeypatch: 
     assert meta["steps"]["scoring"]["status"] == "completed"
 
 
-def test_run_with_strict_mode_aborts_on_degraded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_with_strict_mode_aborts_on_degraded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     trading_day = "2024-04-07"
-    out_dir, state_dir, config_path = _setup_scoring_environment(tmp_path, monkeypatch, trading_day)
+    out_dir, state_dir, config_path = _setup_scoring_environment(
+        tmp_path, monkeypatch, trading_day
+    )
 
     config = _sample_config(
         weights={
@@ -234,7 +271,9 @@ def test_run_keeps_themes_active_when_only_etf_flow_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     trading_day = "2024-04-08"
-    out_dir, state_dir, config_path = _setup_scoring_environment(tmp_path, monkeypatch, trading_day)
+    out_dir, state_dir, config_path = _setup_scoring_environment(
+        tmp_path, monkeypatch, trading_day
+    )
 
     config = _sample_config(
         weights={
@@ -274,9 +313,13 @@ def test_run_keeps_themes_active_when_only_etf_flow_fails(
     assert not theme_map["btc"]["degraded"]
 
 
-def test_config_update_adjusts_scores_and_actions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_config_update_adjusts_scores_and_actions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     trading_day = "2024-04-06"
-    out_dir, state_dir, config_path = _setup_scoring_environment(tmp_path, monkeypatch, trading_day)
+    out_dir, state_dir, config_path = _setup_scoring_environment(
+        tmp_path, monkeypatch, trading_day
+    )
 
     weights_initial = {
         "fundamental": 0.1,
@@ -286,8 +329,12 @@ def test_config_update_adjusts_scores_and_actions(tmp_path: Path, monkeypatch: p
         "event": 0.15,
     }
     thresholds_initial = {"action_add": 80, "action_trim": 40}
-    config_initial = _sample_config(weights_initial, thresholds_initial, version=1, changed_at="2024-04-05")
-    config_path.write_text(yaml.safe_dump(config_initial, allow_unicode=True), encoding="utf-8")
+    config_initial = _sample_config(
+        weights_initial, thresholds_initial, version=1, changed_at="2024-04-05"
+    )
+    config_path.write_text(
+        yaml.safe_dump(config_initial, allow_unicode=True), encoding="utf-8"
+    )
 
     _write_json(out_dir / "raw_market.json", _sample_raw_market())
     _write_json(
@@ -304,7 +351,9 @@ def test_config_update_adjusts_scores_and_actions(tmp_path: Path, monkeypatch: p
     scores_initial = json.loads(scores_path.read_text(encoding="utf-8"))
     actions_initial = json.loads(actions_path.read_text(encoding="utf-8"))["items"]
 
-    ai_theme_initial = next(theme for theme in scores_initial["themes"] if theme["name"] == "ai")
+    ai_theme_initial = next(
+        theme for theme in scores_initial["themes"] if theme["name"] == "ai"
+    )
     action_ai_initial = next(item for item in actions_initial if item["name"] == "AI")
 
     weights_updated = {
@@ -315,8 +364,12 @@ def test_config_update_adjusts_scores_and_actions(tmp_path: Path, monkeypatch: p
         "event": 0.05,
     }
     thresholds_updated = {"action_add": 55, "action_trim": 40}
-    config_updated = _sample_config(weights_updated, thresholds_updated, version=2, changed_at="2024-04-06")
-    config_path.write_text(yaml.safe_dump(config_updated, allow_unicode=True), encoding="utf-8")
+    config_updated = _sample_config(
+        weights_updated, thresholds_updated, version=2, changed_at="2024-04-06"
+    )
+    config_path.write_text(
+        yaml.safe_dump(config_updated, allow_unicode=True), encoding="utf-8"
+    )
 
     second_exit = scoring.run(["--force"])
     assert second_exit == 0
@@ -324,7 +377,9 @@ def test_config_update_adjusts_scores_and_actions(tmp_path: Path, monkeypatch: p
     scores_updated = json.loads(scores_path.read_text(encoding="utf-8"))
     actions_updated = json.loads(actions_path.read_text(encoding="utf-8"))["items"]
 
-    ai_theme_updated = next(theme for theme in scores_updated["themes"] if theme["name"] == "ai")
+    ai_theme_updated = next(
+        theme for theme in scores_updated["themes"] if theme["name"] == "ai"
+    )
     action_ai_updated = next(item for item in actions_updated if item["name"] == "AI")
 
     assert ai_theme_updated["total"] > ai_theme_initial["total"]

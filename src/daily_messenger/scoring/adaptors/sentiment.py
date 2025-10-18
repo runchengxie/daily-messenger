@@ -1,4 +1,5 @@
 """Sentiment adaptor that normalizes raw survey and options data."""
+
 from __future__ import annotations
 
 import math
@@ -73,17 +74,23 @@ def _score_aaii(series: Sequence[float]) -> float:
     return -_compress(z)
 
 
-def aggregate(sentiment_node: Mapping[str, object], history: Mapping[str, Sequence[float]]) -> SentimentResult | None:
+def aggregate(
+    sentiment_node: Mapping[str, object], history: Mapping[str, Sequence[float]]
+) -> SentimentResult | None:
     """Aggregate sentiment signals into a 0-100 score."""
 
     components: Dict[str, float] = {}
 
-    put_call_data = sentiment_node.get("put_call") if isinstance(sentiment_node, Mapping) else None
+    put_call_data = (
+        sentiment_node.get("put_call") if isinstance(sentiment_node, Mapping) else None
+    )
     put_call_series = _safe_series(history.get("put_call_equity", []))
     if put_call_series and isinstance(put_call_data, Mapping):
         components["put_call"] = _score_put_call(put_call_series)
 
-    aaii_data = sentiment_node.get("aaii") if isinstance(sentiment_node, Mapping) else None
+    aaii_data = (
+        sentiment_node.get("aaii") if isinstance(sentiment_node, Mapping) else None
+    )
     aaii_series = _safe_series(history.get("aaii_bull_bear_spread", []))
     if aaii_series and isinstance(aaii_data, Mapping):
         components["aaii"] = _score_aaii(aaii_series)
@@ -94,4 +101,6 @@ def aggregate(sentiment_node: Mapping[str, object], history: Mapping[str, Sequen
     combined = sum(components.values()) / len(components)
     score = _NEUTRAL_SCORE + 50.0 * combined
     score = max(0.0, min(100.0, score))
-    return SentimentResult(score=score, components={k: 50.0 + 50.0 * v for k, v in components.items()})
+    return SentimentResult(
+        score=score, components={k: 50.0 + 50.0 * v for k, v in components.items()}
+    )

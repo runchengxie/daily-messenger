@@ -1,0 +1,8 @@
+symbol: BTCUSDT
+exchange: binance
+report:
+  title: "BTC/USDT 每日技术简报"
+  include_intraday: true
+session:
+  tz: America/New_York
+  daily_close_hour: 17

@@ -9,12 +9,12 @@ import requests
 
 
 def load_fmp_key():
-    # 1) 环境变量优先
+    # 1) Prefer environment variable.
     env_key = os.getenv("FMP_API_KEY")
     if env_key:
         return env_key, "env:FMP_API_KEY"
 
-    # 2) 从 API_KEYS_PATH 指定的 json 里读
+    # 2) Try the JSON file referenced by API_KEYS_PATH.
     path = os.getenv("API_KEYS_PATH", "./api_keys.json")
     if os.path.exists(path):
         try:
@@ -26,7 +26,7 @@ def load_fmp_key():
         except Exception as e:
             print(f"[WARN] 读取 {path} 失败: {e}")
 
-    # 3) 命令行参数作为兜底
+    # 3) Fall back to the first CLI argument.
     if len(sys.argv) > 1:
         return sys.argv[1], "argv"
 

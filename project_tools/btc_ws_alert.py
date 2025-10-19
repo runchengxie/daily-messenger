@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-实时告警（常驻进程）：订阅 Binance ws kline_1m，触发阈值后调用 post_feishu。
+Realtime alert daemon that streams Binance ``kline_1m`` data and notifies Feishu.
 
-示例：
+Example:
   FEISHU_WEBHOOK_ALERTS=xxx FEISHU_SECRET_ALERTS=yyy \
   uv run python project_tools/btc_ws_alert.py --symbol btcusdt --rsi_high 70 --rsi_low 30
 """
@@ -68,7 +68,7 @@ async def run(symbol: str, rsi_high: float, rsi_low: float, min_gap_sec: int):
 
 def send_feishu(text: str):
     print("ALERT:", text)
-    # 复用仓库已有的推送器
+    # Reuse the existing Feishu poster from the main package.
     try:
         subprocess.run(
             [

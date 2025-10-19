@@ -95,7 +95,7 @@ def fetch_one(symbol: str, interval: str, date_str: str) -> pd.DataFrame:
     if r.status_code != 200:
         return pd.DataFrame()
     with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
-        # 每个 zip 里只有一个 CSV，文件名形如 BTCUSDT-1m-2024-01-01.csv
+        # Each archive contains a single CSV such as BTCUSDT-1m-2024-01-01.csv.
         name = [n for n in zf.namelist() if n.endswith(".csv")][0]
         with zf.open(name) as f:
             df = pd.read_csv(
@@ -330,9 +330,9 @@ def incremental_fetch(
     pages = 0
     while cur < end and pages < max_pages:
         pages += 1
-        # Binance 时间窗口（毫秒）
+        # Binance endpoints expect millisecond timestamps for the window.
         start_ms = int(cur.timestamp() * 1000)
-        # 估个窗口长度：1m -> 1000 分钟，1h -> 1000 小时，1d -> 1000 天
+        # Window size heuristic: 1m ≈ 1000 minutes, 1h ≈ 1000 hours, 1d ≈ 1000 days.
         if interval == "1m":
             delta = timedelta(minutes=1000)
         elif interval == "1h":
@@ -346,7 +346,7 @@ def incremental_fetch(
             source = "binance"
         except Exception as exc:  # noqa: BLE001
             print(f"Binance fail: {exc}; try Kraken...")
-            # Kraken since=秒，返回会包含 since 起始之后的段
+            # Kraken uses second-based timestamps and returns data since the provided value.
             since = int(cur.timestamp())
             try:
                 chunk = fetch_kraken(k_int, since)
@@ -368,7 +368,7 @@ def incremental_fetch(
         else:
             cur = cur + delta
             print("empty window, advance")
-        time.sleep(0.2)  # 稍微礼貌点
+        time.sleep(0.2)  # Be polite to upstream APIs.
 
     if frames:
         add = pd.concat(frames, ignore_index=True)

@@ -95,7 +95,7 @@ def build_report(
     )
     title = title or "BTC/USDT 每日技术简报"
 
-    # 指标
+    # Compute technical indicators used in the report.
     d1["SMA50"] = d1["close"].rolling(50).mean()
     d1["SMA200"] = d1["close"].rolling(200).mean()
     d1["RSI14"] = rsi(d1["close"], 14)

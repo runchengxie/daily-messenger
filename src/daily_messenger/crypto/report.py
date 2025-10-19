@@ -1,24 +1,19 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-生成 BTC 日报（Markdown）。
-来源：data/btcusdt/klines_1d.parquet 和 1h/1m 作为补充。
+"""BTC daily Markdown report generation."""
 
-示例：
-  uv run python scripts/crypto_btc/btc_daily_report.py --out out/btc_report.md
-"""
+from __future__ import annotations
+
 import argparse
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
+import yaml
 
-
-def parse_args():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--datadir", default="data/btcusdt")
-    ap.add_argument("--out", default="out/btc_report.md")
-    return ap.parse_args()
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_DATA_DIR = PROJECT_ROOT / "out" / "btc"
+DEFAULT_REPORT = PROJECT_ROOT / "out" / "btc_report.md"
+DEFAULT_CONFIG = PROJECT_ROOT / "config" / "ta_btc.yml"
 
 
 def rsi(series: pd.Series, period: int = 14) -> pd.Series:
@@ -32,7 +27,6 @@ def rsi(series: pd.Series, period: int = 14) -> pd.Series:
 
 
 def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    # 需要 high/low/close 列，按日线
     high = df["high"]
     low = df["low"]
     close = df["close"]
@@ -59,7 +53,7 @@ def pivots(h, l, c):
     return pp, r1, s1, r2, s2, r3, s3
 
 
-def load_parquet(datadir: Path, interval: str) -> pd.DataFrame:
+def _load_parquet(datadir: Path, interval: str) -> pd.DataFrame:
     p = datadir / f"klines_{interval}.parquet"
     if not p.exists():
         return pd.DataFrame()
@@ -73,18 +67,33 @@ def load_parquet(datadir: Path, interval: str) -> pd.DataFrame:
     return df
 
 
-def main():
-    args = parse_args()
-    datadir = Path(args.datadir)
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
+def _load_config(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
-    d1 = load_parquet(datadir, "1d")
-    h1 = load_parquet(datadir, "1h")
-    m1 = load_parquet(datadir, "1m")
+
+def build_report(
+    *,
+    datadir: Path = DEFAULT_DATA_DIR,
+    outpath: Path = DEFAULT_REPORT,
+    config_path: Optional[Path] = DEFAULT_CONFIG,
+) -> Path:
+    d1 = _load_parquet(datadir, "1d")
+    h1 = _load_parquet(datadir, "1h")
+    m1 = _load_parquet(datadir, "1m")
 
     if d1.empty:
-        raise SystemExit("缺少日线数据，先跑 incremental_fetch.py --interval 1d")
+        raise SystemExit("缺少日线数据，先跑 btc fetch --interval 1d")
+
+    config = _load_config(config_path) if config_path else {}
+    title = (
+        config.get("report", {}).get("title")
+        if isinstance(config.get("report"), dict)
+        else None
+    )
+    title = title or "BTC/USDT 每日技术简报"
 
     # 指标
     d1["SMA50"] = d1["close"].rolling(50).mean()
@@ -95,10 +104,11 @@ def main():
 
     pp, r1, s1, r2, s2, r3, s3 = pivots(d1["high"].iloc[-2], d1["low"].iloc[-2], d1["close"].iloc[-2])
 
-    # 生成报告
     lines = []
-    lines.append("# BTC/USDT 每日技术简报\n")
-    lines.append(f"**收盘价**: {last['close']:.2f}  |  **SMA50**: {last['SMA50']:.2f}  |  **SMA200**: {last['SMA200']:.2f}\n")
+    lines.append(f"# {title}\n")
+    lines.append(
+        f"**收盘价**: {last['close']:.2f}  |  **SMA50**: {last['SMA50']:.2f}  |  **SMA200**: {last['SMA200']:.2f}\n"
+    )
     sma_state = "上穿" if last["SMA50"] > last["SMA200"] else "下穿或未上穿"
     lines.append(f"**均线关系**: SMA50 相对 SMA200 为 {sma_state}\n")
     lines.append(f"**RSI14**: {last['RSI14']:.1f}  |  **ATR14**: {last['ATR14']:.2f}\n")
@@ -113,15 +123,27 @@ def main():
 
     if not m1.empty:
         m_last = m1.iloc[-1]
-        # 1m RSI
         m1["RSI14"] = rsi(m1["close"], 14)
         lines.append("\n## 分钟级快照\n")
         lines.append(f"1m 最新: {m_last['close']:.2f}; 1m RSI14: {m1['RSI14'].iloc[-1]:.1f}\n")
 
     md = "\n".join(lines)
-    out.write_text(md, encoding="utf-8")
-    print(f"Wrote {out}")
+    outpath.parent.mkdir(parents=True, exist_ok=True)
+    outpath.write_text(md, encoding="utf-8")
+    print(f"Wrote {outpath}")
+    return outpath
 
 
-if __name__ == "__main__":
-    main()
+def run_report(argv: Optional[list[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="生成 BTC 日报（Markdown）")
+    parser.add_argument("--datadir", default=str(DEFAULT_DATA_DIR))
+    parser.add_argument("--out", default=str(DEFAULT_REPORT))
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG))
+    args = parser.parse_args(argv)
+
+    build_report(
+        datadir=Path(args.datadir),
+        outpath=Path(args.out),
+        config_path=Path(args.config) if args.config else None,
+    )
+    return 0

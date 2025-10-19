@@ -34,6 +34,7 @@ EXCLUDE_DIRS_ANYWHERE: Set[str] = {
     "dist",
     "renv",
     "node_modules",
+    ".uv-cache",
 }
 
 # Directories to exclude ONLY if they are in the project root directory.

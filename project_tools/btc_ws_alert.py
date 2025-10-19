@@ -5,8 +5,11 @@
 
 示例：
   FEISHU_WEBHOOK_ALERTS=xxx FEISHU_SECRET_ALERTS=yyy \
-  uv run python scripts/crypto_btc/ws_alert.py --symbol btcusdt --rsi_high 70 --rsi_low 30
+  uv run python project_tools/btc_ws_alert.py --symbol btcusdt --rsi_high 70 --rsi_low 30
 """
+
+from __future__ import annotations
+
 import argparse
 import asyncio
 import json
@@ -57,15 +60,15 @@ async def run(symbol: str, rsi_high: float, rsi_low: float, min_gap_sec: int):
                 if value <= rsi_low and now - last_alert_ts > min_gap_sec:
                     send_feishu(f"BTC 1m RSI 触底 {value:.1f}，价格 {close:.2f}")
                     last_alert_ts = now
-        except Exception as e:
-            print("ws error:", e)
+        except Exception as exc:  # noqa: BLE001
+            print("ws error:", exc)
             await asyncio.sleep(3)
             continue
 
 
 def send_feishu(text: str):
     print("ALERT:", text)
-    # 复用你仓库已有的推送器
+    # 复用仓库已有的推送器
     try:
         subprocess.run(
             [
@@ -85,7 +88,6 @@ def send_feishu(text: str):
             check=False,
         )
     except FileNotFoundError:
-        # 退而求其次：直接用 webhook（若存在）
         webhook = os.getenv("FEISHU_WEBHOOK_ALERTS")
         if not webhook:
             return
@@ -94,11 +96,16 @@ def send_feishu(text: str):
         requests.post(webhook, json={"msg_type": "text", "content": {"text": text}}, timeout=10)
 
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--symbol", default="btcusdt")
-    ap.add_argument("--rsi_high", type=float, default=70)
-    ap.add_argument("--rsi_low", type=float, default=30)
-    ap.add_argument("--min_gap_sec", type=int, default=900, help="两次告警最小间隔")
-    args = ap.parse_args()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--symbol", default="btcusdt")
+    parser.add_argument("--rsi_high", type=float, default=70)
+    parser.add_argument("--rsi_low", type=float, default=30)
+    parser.add_argument("--min_gap_sec", type=int, default=900, help="两次告警最小间隔")
+    args = parser.parse_args(argv)
     asyncio.run(run(args.symbol, args.rsi_high, args.rsi_low, args.min_gap_sec))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

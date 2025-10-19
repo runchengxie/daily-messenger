@@ -16,7 +16,9 @@ API_KEYS='{}' uv run dm run --force-score
 # 常用旗标：--date YYYY-MM-DD, --force-fetch, --force-score, --degraded
 ```
 
-> ⚠️ **定时执行窗口**：GitHub Actions 仅在工作日 UTC 14:00 触发，且会校验当前是否处于 **07:00–07:10 PT** 播报窗口。超出窗口 CI 会立即退出，不会重新排程。
+> ⚠️ **定时执行窗口**：GitHub Actions 仅在工作日 UTC 14:00 触发，且会校验当前是否处于 **07:00–07:10 PT** 播报窗口。超出窗口 CI 会立即退出，不会重新排程；手动 `workflow_dispatch` 同样遵循该窗口。
+>
+> 🪟 **Windows 提示**：建议使用 WSL2；若直接在 PowerShell 下运行，可跳过 `.envrc`，改用 `setx` / `$env:VAR` 设置环境变量，再执行同样的 `uv` 命令。
 
 ## 常用命令速记
 
@@ -126,6 +128,22 @@ repo/
 
     支持键：`alpha_vantage`、`twelve_data`、`financial_modeling_prep`、`trading_economics`、`finnhub`、`ai_feeds`、`arxiv`、`coinbase`、`okx`、`sosovalue`、`alpaca_key_id`、`alpaca_secret`。
 
+### 浏览器链路与礼貌抓取变量
+
+| 变量 | 必填 | 用途 | 获取方式 |
+| ---- | ---- | ---- | -------- |
+| `FARSIDE_COOKIES` | 否 | Playwright 抓取 ETF 资金流时复用的 Cookie 会话 | CI 会自动注入；本地调试可留空或从浏览器复制 |
+| `FARSIDE_UA` | 否 | 覆盖默认 User-Agent 避免被拦截 | CI 使用 Playwright 生成；本地可使用浏览器 UA |
+| `EDGAR_USER_AGENT` | 否 | 向 SEC EDGAR 申明身份，避免请求被拒 | 建议格式：`DailyMessenger/1.0 (contact: you@example.com)` |
+
+> Playwright 步骤仅在需要 ETF 资金流数据时启用；缺少上述变量仍会回退至本地缓存或降级输出。
+
+### EDGAR 礼貌示例
+
+```bash
+export EDGAR_USER_AGENT="DailyMessenger/1.0 (contact: you@example.com)"
+```
+
 3. 调整权重与阈值：修改 `config/weights.yml` 并同步更新测试断言（见 `tests/`）。
 
 缺失凭证或接口异常时，`src/daily_messenger/etl/run_fetch.py` 会写入 `out/etl_status.json`，同时触发模拟数据或历史回退，流水线仍可完成但会被标记为降级模式。
@@ -188,6 +206,22 @@ uv run dm digest             # 渲染网页、摘要、卡片
 
 > 提示：也可通过设置 `DM_DISABLE_THROTTLE=1` 达成与 `--disable-throttle` 相同的效果。
 
+### BTC 工具子命令
+
+`dm btc` 将比特币冷启动、增量抓取与 Markdown 日报纳入同一个入口，便于 CI 与本地复用。
+
+```bash
+uv run dm btc init-history --interval 1d --start 2024-01-01 --end 2024-04-01
+uv run dm btc fetch --interval 1h --lookback 5d
+uv run dm btc report --out out/btc_report.md
+```
+
+* `init-history`：一次性从 Binance 下载压缩包并写入 `out/btc/klines_<interval>.parquet`。
+
+* `fetch`：按回看窗口增量刷新 Binance → Kraken → Bitstamp，优雅降级。
+
+* `report`：读取 1d/1h/1m Parquet，生成技术面 Markdown 报告（默认 `config/ta_btc.yml`）。
+
 ## CLI 帮助（自动生成）
 
 `project_tools/update_cli_help.py` 会调用 `python -m daily_messenger.cli --help` 并更新下方代码块，确保 README 与实际 CLI 同步；在 CI 中可运行 `uv run python project_tools/update_cli_help.py --check` 自动守护是否漂移：
@@ -195,16 +229,17 @@ uv run dm digest             # 渲染网页、摘要、卡片
 <!-- cli-help:start -->
 ```text
 $ dm --help
-usage: dm [-h] {run,fetch,score,digest} ...
+usage: dm [-h] {run,fetch,score,digest,btc} ...
 
 Daily Messenger CLI
 
 positional arguments:
-  {run,fetch,score,digest}
+  {run,fetch,score,digest,btc}
     run                 Run ETL, scoring, and digest sequentially
     fetch               Run ETL only
     score               Run scoring only
     digest              Render digest only
+    btc                 BTC monitoring helpers
 
 options:
   -h, --help            show this help message and exit
@@ -247,6 +282,52 @@ options:
   -h, --help   show this help message and exit
   --date DATE  Override trading day (YYYY-MM-DD)
   --degraded   Render in degraded mode
+
+$ dm btc --help
+usage: dm btc [-h] {init-history,fetch,report} ...
+
+positional arguments:
+  {init-history,fetch,report}
+    init-history        一次性下载 Binance 日度压缩包并合并为 Parquet
+    fetch               增量刷新 Binance/Kraken/Bitstamp K 线并写入 Parquet
+    report              生成 BTC Markdown 日报
+
+options:
+  -h, --help            show this help message and exit
+
+$ dm btc init-history --help
+usage: dm btc init-history [-h] [--symbol SYMBOL] [--interval {1d,1h,1m}]
+                           --start START --end END [--outdir OUTDIR]
+
+options:
+  -h, --help            show this help message and exit
+  --symbol SYMBOL
+  --interval {1d,1h,1m}
+  --start START         YYYY-MM-DD
+  --end END             YYYY-MM-DD
+  --outdir OUTDIR       输出目录（默认 out/btc）
+
+$ dm btc fetch --help
+usage: dm btc fetch [-h] [--interval {1d,1h,1m}] [--symbol SYMBOL]
+                    [--outdir OUTDIR] [--lookback LOOKBACK]
+                    [--max-pages MAX_PAGES]
+
+options:
+  -h, --help            show this help message and exit
+  --interval {1d,1h,1m}
+  --symbol SYMBOL
+  --outdir OUTDIR       输出目录（默认 out/btc）
+  --lookback LOOKBACK   回看窗口，如 7d/3h/1d
+  --max-pages MAX_PAGES
+
+$ dm btc report --help
+usage: dm btc report [-h] [--datadir DATADIR] [--out OUT] [--config CONFIG]
+
+options:
+  -h, --help         show this help message and exit
+  --datadir DATADIR  Parquet 数据目录（默认 out/btc）
+  --out OUT          输出 Markdown 文件（默认 out/btc_report.md）
+  --config CONFIG    技术分析配置（默认 config/ta_btc.yml）
 ```
 <!-- cli-help:end -->
 
@@ -263,6 +344,8 @@ options:
 * `digest_card.json`（飞书互动卡片结构体）
 
 * `run_meta.json`（本次流水线的机器可读运行元数据）
+
+> 🌐 **静态预览**：本地可运行 `python -m http.server -d out 8000`，再访问 `http://localhost:8000/` 检查 Pages 成品。
 
 ## 产物契约
 
@@ -412,6 +495,16 @@ options:
 
 * 降级触发条件：`out/etl_status.json.ok=false`、`scores.json.degraded=true` 或 CLI 传入 `--degraded`。降级状态会在网页、摘要与卡片中显著提示。
 
+### 常见降级路径速查
+
+| 场景 | 触发条件 | 回退行为 | 自助处理 |
+| ---- | -------- | -------- | -------- |
+| BTC 主题行情 | Binance/Kraken/Bitstamp 全部不可用 | 读取最近成功产出的 Parquet，必要时写入 `degraded=true` | 手动执行 `uv run dm btc fetch` 或检查网络代理 |
+| 港股指数 | Stooq/Yahoo 接口超时或 429 | 使用上一交易日缓存；若无缓存则标记降级 | 更新 API 密钥、增加本地缓存或放宽抓取窗口 |
+| 情绪指标 (Put/Call, AAII) | CSV 下载失败、解析异常 | 使用 `state/sentiment_history.json` 最新值 | 手动补录 CSV 或删除 `state/` 对应键重新拉取 |
+| 宏观/事件 | Trading Economics/Finnhub 超时 | 回退到 `_simulate_events()` 并在产物中注明 | 稍后重跑 `uv run dm fetch --force` |
+| ETF 资金流 | Playwright/Farside Cookie 过期 | 标记 `fallback`，报告中提示数据延迟 | 重新采集 `FARSIDE_COOKIES/U A` 或降级到缓存 |
+
 ## 飞书推送
 
 > 缺少对应频道的 Webhook（`FEISHU_WEBHOOK_DAILY` / `FEISHU_WEBHOOK_ALERTS`）时脚本会记录告警并以 0 退出码收尾，不会阻断 CI。
@@ -452,11 +545,26 @@ uv run python -m daily_messenger.digest.ta_report --config config/ta_xau.yml
 
 推荐频率：
 
-- **日报（D）**：纽约 17:00 切日后生成完整报告，进入日报/小时频道。
-- **小时（H1）**：提供盘中轻量快照，默认与 M5 一样推送至 `alerts` 频道，配合去重与节流避免刷屏。
-- **触发/5 分钟（M5）**：仅推送告警至 `alerts` 频道，结合 Feishu 双 Webhook 做节流与静音。
+* **日报（D）**：纽约 17:00 切日后生成完整报告，进入日报/小时频道。
+* **小时（H1）**：提供盘中轻量快照，默认与 M5 一样推送至 `alerts` 频道，配合去重与节流避免刷屏。
+* **触发/5 分钟（M5）**：仅推送告警至 `alerts` 频道，结合 Feishu 双 Webhook 做节流与静音。
 
 提示：OANDA 返回的 volume 是 tick 计数，适用于波动度评估，不等同于交易所成交量。生产环境请根据需要替换为正式实时数据源。
+
+## BTC/USDT 技术简报
+
+BTC 技术面报告使用 `dm btc` 子命令维护 1m/1h/1d K 线并生成 Markdown 摘要，默认配置见 `config/ta_btc.yml`。
+
+```bash
+uv run dm btc fetch --interval 1d --lookback 10d
+uv run dm btc fetch --interval 1h --lookback 5d
+uv run dm btc fetch --interval 1m --lookback 2d
+uv run dm btc report --out out/btc_report.md
+```
+
+* 抓取器按 Binance → Kraken → Bitstamp 顺序回退，写入 `out/btc/klines_<interval>.parquet` 并记录降级状态。
+* 报告默认计算 SMA50/200、RSI14、ATR14 与枢轴位，可通过 `config/ta_btc.yml` 调整标题或时区。
+* GitHub Actions 中的 `btc-daily.yml` 会在工作日 UTC 14:00（07:00–07:10 PT 窗口内）自动运行上述流程并推送 Feishu alerts 通道。
 
 ## 日志与观测
 
@@ -467,6 +575,14 @@ uv run python -m daily_messenger.digest.ta_report --config config/ta_xau.yml
 * 抓取阶段的节流可通过 `DM_DISABLE_THROTTLE=1` 显式关闭（默认遵循配置或内置延迟，建议仅在受控环境使用）。
 
 ## 故障排查指南
+
+**10 秒自检：**
+
+1. 查看 `out/run_meta.json`，确认哪个阶段首次返回 `status != "ok"`。
+2. 打开 `out/etl_status.json`，核对缺失数据源与 `message` 提示。
+3. 检查当前 shell 是否注入了 `API_KEYS` / `API_KEYS_PATH` 及浏览器链路变量。
+4. 对照本地时间是否落在 07:00–07:10 PT 播报窗口（CI 同样受限）。
+5. Playwright/ETF 场景：确认 `FARSIDE_COOKIES`、`FARSIDE_UA`、`EDGAR_USER_AGENT` 是否就绪，必要时重新抓取。
 
 * **缺少 `API_KEYS`**：流水线会自动进入降级模式，模拟数据会在网页与摘要顶部加粗提示，同时 `out/etl_status.json.ok=false` 与 `run_meta.json` 中的 `degraded=true`。如需验证真实接口，可在本地导入最小化凭证并重新执行。
 * **未配置飞书 Webhook**：当目标频道 (`FEISHU_WEBHOOK_DAILY` / `FEISHU_WEBHOOK_ALERTS`) 缺失时，推送脚本会安全跳过并返回 0，同时记录 `feishu_skip_no_webhook` 事件，不会阻断 CI。

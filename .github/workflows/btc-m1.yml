@@ -1,0 +1,74 @@
+name: btc-m1
+
+on:
+  schedule:
+    - cron: "2-59/5 * * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: btc-m1
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      FEISHU_WEBHOOK_ALERTS: ${{ secrets.FEISHU_WEBHOOK_ALERTS }}
+      FEISHU_SECRET_ALERTS: ${{ secrets.FEISHU_SECRET_ALERTS }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Sync dependencies
+        run: uv sync --locked --no-dev || uv sync --no-dev
+
+      - name: Guard trading window
+        if: ${{ github.event_name == 'schedule' }}
+        env:
+          TZ: America/New_York
+          WINDOW_START: "0600"
+          WINDOW_END: "1635"
+        run: |
+          now=$(TZ=$TZ date +%H%M)
+          if [ "$now" -lt "$WINDOW_START" ] || [ "$now" -gt "$WINDOW_END" ]; then
+            echo "当前不在 BTC 分钟监控窗口，提前退出。"
+            exit 0
+          fi
+
+      - name: Ensure BTC 日线缓存存在
+        run: |
+          if [ ! -f out/btc/klines_1d.parquet ]; then
+            uv run dm btc fetch --interval 1d --lookback 10d
+          fi
+
+      - name: Refresh BTC 1m data
+        run: uv run dm btc fetch --interval 1m --lookback 2d
+
+      - name: Generate BTC minute report
+        run: |
+          uv run dm btc report \
+            --config config/ta_btc_m1.yml \
+            --out out/btc_report_m1.md
+
+      - name: Push Feishu alerts
+        if: ${{ env.FEISHU_WEBHOOK_ALERTS != '' }}
+        run: |
+          uv run python -m daily_messenger.tools.post_feishu \
+            --channel alerts \
+            --mode post \
+            --summary out/btc_report_m1.md \
+            --title "BTC/USDT 分钟级监控"

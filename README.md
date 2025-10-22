@@ -16,7 +16,7 @@ API_KEYS='{}' uv run dm run --force-score
 # 常用旗标：--date YYYY-MM-DD, --force-fetch, --force-score, --degraded
 ```
 
-> 定时执行窗口：GitHub Actions 仅在工作日 UTC 14:00 触发，且会校验当前是否处于 07:00–07:10 PT 播报窗口。超出窗口 CI 会立即退出，不会重新排程；手动 `workflow_dispatch` 同样遵循该窗口。
+> 定时执行窗口：主日报 `daily-digest` 在工作日 UTC 14:00 触发，并校验是否处于 07:00–07:10 PT 播报窗口，超出即退出。BTC/XAU 监控工作流按照每小时与每 5 分钟计划触发，额外受 06:00–16:35 ET 守卫限制；详见下文工作流总览。
 >
 > Windows 提示：建议使用 WSL2；若直接在 PowerShell 下运行，可跳过 `.envrc`，改用 `setx` / `$env:VAR` 设置环境变量，再执行同样的 `uv` 命令。
 
@@ -30,9 +30,9 @@ API_KEYS='{}' uv run dm run --force-score
 
 ## 项目概览
 
-* 场景：为内部投研或舆情团队每天生成盘前情报，GitHub Actions 按工作日 UTC 14:00 触发，产物发布到 GitHub Pages，并可同步推送飞书群机器人。
+* 场景：为内部投研或舆情团队每天生成盘前情报。主日报工作流 `daily-digest` 仍在工作日 UTC 14:00 产出网页与卡片，BTC/XAU 监控工作流按小时与 5 分钟补充盘中快照（详见下文“GitHub Actions 工作流总览”）。
 
-* 自动化触发：CI 仅在上述定时任务与手动 `workflow_dispatch` 下运行，常规 `git push` 不会触发；定时触发也会检测是否处于 07:00–07:10 PT 播报窗口，超出则直接退出。
+* 自动化触发：所有工作流均由 cron 与手动 `workflow_dispatch` 驱动，常规 `git push` 不会触发。日报链路受 07:00–07:10 PT 窗口保护，资产监控任务遵循 06:00–16:35 ET 守卫，超出窗口会立即退出且不会重排。
 
 * 语言与运行时：Python 3.11；默认使用 [uv](https://github.com/astral-sh/uv) 管理依赖和执行命令。
 
@@ -66,6 +66,31 @@ flowchart TD
     N -- 否 --> P[跳过飞书推送<br/>不中断流水线]
     Jd --> Q[CI 标记失败<br/>exit 1]
     M --> R[完成]
+```
+
+## GitHub Actions 工作流总览
+
+| Workflow | Cron (UTC) | 守卫窗口 | 主要产物 | 飞书频道 |
+| -------- | ---------- | -------- | -------- | -------- |
+| `daily-digest` | `0 14 * * 1-5` | 07:00–07:10 PT | `out/index.html`, `out/digest_card.json` | `daily` |
+| `btc-d` | `0 14 * * 1-5` | 07:00–07:10 PT | `out/btc_report_daily.md` | `daily` |
+| `btc-h1` | `2 * * * 1-5` | 06:00–16:35 ET | `out/btc_report_h1.md` | `alerts` |
+| `btc-m1` | `2-59/5 * * * 1-5` | 06:00–16:35 ET | `out/btc_report_m1.md` | `alerts` |
+| `xau-d` | `0 14 * * 1-5` | 06:00–16:35 ET | `out/xau_report_daily.md` | `daily` |
+| `xau-h1` | `2 * * * 1-5` | 06:00–16:35 ET | `out/xau_report_h1.md` | `alerts` |
+| `xau-m5` | `2-59/5 * * * 1-5` | 06:00–16:35 ET | `out/xau_report_m5.md` | `alerts` |
+
+> 说明：资产监控工作流使用 `concurrency` 互斥，窗口外立即退出以避免无意义调用；`btc-d` 与主日报共享 07:00–07:10 PT 播报窗口，其余 BTC/XAU 任务均限定在纽市 06:00–16:35 ET。
+
+```mermaid
+flowchart LR
+    C[多条 cron<br/>14:00 / 每小时 :02 / 每 5 分钟 :02] --> W{处于守卫窗口?}
+    W -- 否 --> S[退出作业]
+    W -- 是 --> F[uv run ... fetch/render]
+    F --> M[生成 Markdown 报告<br/>out/btc_*.md or out/xau_*.md]
+    M --> P{目标频道}
+    P --> D[Feishu daily]
+    P --> A[Feishu alerts]
 ```
 
 ## 流水线一览
@@ -214,14 +239,14 @@ uv run dm digest             # 渲染网页、摘要、卡片
 ```bash
 uv run dm btc init-history --interval 1d --start 2024-01-01 --end 2024-04-01
 uv run dm btc fetch --interval 1h --lookback 5d
-uv run dm btc report --out out/btc_report.md
+uv run dm btc report --config config/ta_btc_daily.yml --out out/btc_report_daily.md
 ```
 
 * `init-history`：一次性从 Binance 下载压缩包并写入 `out/btc/klines_<interval>.parquet`。
 
 * `fetch`：按回看窗口增量刷新 Binance → Kraken → Bitstamp，优雅降级。
 
-* `report`：读取 1d/1h/1m Parquet，生成技术面 Markdown 报告（默认 `config/ta_btc.yml`）。
+* `report`：读取 1d/1h/1m Parquet，生成技术面 Markdown 报告，可通过 `--config` 切换到 `config/ta_btc_*.yml` 控制段落。
 
 ## CLI 帮助（自动生成）
 
@@ -489,42 +514,46 @@ uv run python -m daily_messenger.tools.post_feishu \
 
 ## XAU/USD 技术分析报告
 
-黄金技术面报告使用 `config/ta_xau.yml` 描述指标窗口与产物路径，通过 OANDA Practice REST 获取日线、小时与 5 分钟 midpoint K 线，计算 SMA50/200、RSI14、ATR14 与前一交易日枢轴点。
+黄金技术面报告使用 `config/ta_xau_*.yml` 描述指标窗口与产物路径，通过 OANDA Practice REST 获取日线、小时与 5 分钟 midpoint K 线，计算 SMA50/200、RSI14、ATR14 与前一交易日枢轴点。按需选择配置可得到日报与盘中快照：
 
 ```bash
 export OANDA_TOKEN=xxxxxxxxxxxxxxxx
-uv run python -m daily_messenger.digest.ta_report --config config/ta_xau.yml
-# 输出：out/xau_report.md
+uv run python -m daily_messenger.digest.ta_report --config config/ta_xau_daily.yml  # out/xau_report_daily.md
+uv run python -m daily_messenger.digest.ta_report --config config/ta_xau_h1.yml     # out/xau_report_h1.md
+uv run python -m daily_messenger.digest.ta_report --config config/ta_xau_m5.yml     # out/xau_report_m5.md
 ```
 
-默认生成 Markdown 报告（趋势概览 / 指标数值 / 支撑压力 / 盘中观察 / 启发式提示），适合作为每日收盘或盘前摘要。`report.intraday_granularities` 可配置 `["H1", "M5"]` 等粒度获取盘中快照，若只需日报可关闭 `include_intraday`。
+`ta_xau_daily.yml` 关闭 `include_intraday` 专注于日终摘要，`ta_xau_h1.yml` 与 `ta_xau_m5.yml` 分别保留 H1/M5 快照并复用相同的指标与阈值。需要“一次生成全量段落”时仍可使用历史配置 `config/ta_xau.yml`。
 
-推荐频率：
+对应的 GitHub Actions：
 
-* 日报（D）：纽约 17:00 切日后生成完整报告，进入日报/小时频道。
-
-* 小时（H1）：提供盘中轻量快照，默认与 M5 一样推送至 `alerts` 频道，配合去重与节流避免刷屏。
-
-* 触发/5 分钟（M5）：仅推送告警至 `alerts` 频道，结合 Feishu 双 Webhook 做节流与静音。
+* `xau-d`：工作日 UTC 14:00 触发，受 06:00–16:35 ET 守卫限制，向 `daily` 频道发送 `out/xau_report_daily.md`。
+* `xau-h1`：每小时 :02 执行，窗口守卫同上，仅生成小时级 Markdown 并推送 `alerts`。
+* `xau-m5`：交易时段内每 5 分钟 :02 执行，产出 `out/xau_report_m5.md` 并推送 `alerts`。
 
 提示：OANDA 返回的 volume 是 tick 计数，适用于波动度评估，不等同于交易所成交量。生产环境请根据需要替换为正式实时数据源。
 
 ## BTC/USDT 技术简报
 
-BTC 技术面报告使用 `dm btc` 子命令维护 1m/1h/1d K 线并生成 Markdown 摘要，默认配置见 `config/ta_btc.yml`。
+BTC 技术面报告使用 `dm btc` 子命令维护 1m/1h/1d K 线并生成 Markdown 摘要，可配合不同配置文件产出日报与盘中快照。
 
 ```bash
 uv run dm btc fetch --interval 1d --lookback 10d
+uv run dm btc report --config config/ta_btc_daily.yml --out out/btc_report_daily.md
 uv run dm btc fetch --interval 1h --lookback 5d
+uv run dm btc report --config config/ta_btc_h1.yml --out out/btc_report_h1.md
 uv run dm btc fetch --interval 1m --lookback 2d
-uv run dm btc report --out out/btc_report.md
+uv run dm btc report --config config/ta_btc_m1.yml --out out/btc_report_m1.md
 ```
 
 * 抓取器按 Binance → Kraken → Bitstamp 顺序回退，写入 `out/btc/klines_<interval>.parquet` 并记录降级状态。
+* 报告默认计算 SMA50/200、RSI14、ATR14 与枢轴位，可通过 `config/ta_btc.yml` 或上述专用配置调整标题、是否包含 H1/M1 段落。
 
-* 报告默认计算 SMA50/200、RSI14、ATR14 与枢轴位，可通过 `config/ta_btc.yml` 调整标题或时区。
+对应的 GitHub Actions：
 
-* GitHub Actions 中的 `btc-daily.yml` 会在工作日 UTC 14:00（07:00–07:10 PT 窗口内）自动运行上述流程并推送 Feishu alerts 通道。
+* `btc-d`：工作日 UTC 14:00（07:00–07:10 PT 窗口内）刷新 1d 数据并输出 `out/btc_report_daily.md`，推送至 `daily`。
+* `btc-h1`：每小时 :02 触发，仅刷新 1h K 线并生成 `out/btc_report_h1.md`，推送至 `alerts`。
+* `btc-m1`：交易时段内每 5 分钟 :02 触发，刷新 1m 数据后生成 `out/btc_report_m1.md` 并推送 `alerts`。
 
 ## 日志与观测
 
@@ -600,17 +629,19 @@ uv run ruff check .  # 可加 --fix 自动修复
 
   * 如配置了 `FEISHU_WEBHOOK_DAILY`，会在部署后推送最新卡片；缺失凭证则跳过且不中断流程。
 
-* BTC 技术简报：`.github/workflows/btc-daily.yml`。
+* BTC 监控：`.github/workflows/btc-d.yml`、`.github/workflows/btc-h1.yml`、`.github/workflows/btc-m1.yml`。
 
-  * 工作日 UTC 14:00 触发，并在 07:00–07:10 PT 守卫外直接退出，保持与 BTC 报告窗口一致。
+  * `btc-d`：工作日 UTC 14:00 触发，继承 07:00–07:10 PT 守卫，仅刷新 1d K 线并推送 `out/btc_report_daily.md` 至 `daily`。
 
-  * 顺序刷新 1d/1h/1m K 线，生成 `out/btc_report.md` 并向 `alerts` 频道推送纯文本摘要。
+  * `btc-h1`：每小时 :02 运行，受 06:00–16:35 ET 限制；若缺少日线缓存会先补拉一次，然后刷新 1h 数据并推送 `out/btc_report_h1.md` 至 `alerts`。
 
-* 黄金盘中监控：`.github/workflows/xau-intraday.yml`。
+  * `btc-m1`：交易时段内每 5 分钟 :02 运行，刷新 1m 数据后生成 `out/btc_report_m1.md` 并推送 `alerts`。
 
-  * 包含三条计划任务：日报窗口（UTC 14:00）、整点巡检与每 5 分钟快照；定时触发仅在 06:00–16:35 ET 范围内继续执行，其余时间直接退出。
+* 黄金监控：`.github/workflows/xau-d.yml`、`.github/workflows/xau-h1.yml`、`.github/workflows/xau-m5.yml`。
 
-  * 运行 `ta_report` 生成 `out/xau_report.md`，若配置 `FEISHU_WEBHOOK_ALERTS` 则以 post 形式推送 `alerts` 频道。
+  * 三条工作流共享 06:00–16:35 ET 守卫，分别生成 `out/xau_report_daily.md`（`daily`）、`out/xau_report_h1.md`（`alerts`）、`out/xau_report_m5.md`（`alerts`）。
+
+  * 全部使用 `concurrency` 在同一窗口内互斥执行，避免 cron 重叠造成排队。
 
 * 所有工作流均支持 `workflow_dispatch` 手动触发；调试时可检查 `out/run_meta.json` 与结构化日志定位问题。
 

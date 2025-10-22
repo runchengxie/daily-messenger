@@ -88,12 +88,14 @@ def build_report(
         raise SystemExit("缺少日线数据，先跑 btc fetch --interval 1d")
 
     config = _load_config(config_path) if config_path else {}
-    title = (
-        config.get("report", {}).get("title")
-        if isinstance(config.get("report"), dict)
-        else None
-    )
-    title = title or "BTC/USDT 每日技术简报"
+    report_cfg = config.get("report", {}) if isinstance(config.get("report"), dict) else {}
+    title = report_cfg.get("title") or "BTC/USDT 每日技术简报"
+    include_intraday = bool(report_cfg.get("include_intraday", True))
+    intraday_grans_raw = report_cfg.get("intraday_granularities", ["H1", "M1"])
+    if isinstance(intraday_grans_raw, (str, bytes)):
+        intraday_granularities = {str(intraday_grans_raw).upper()}
+    else:
+        intraday_granularities = {str(gran).upper() for gran in intraday_grans_raw}
 
     # Compute technical indicators used in the report.
     d1["SMA50"] = d1["close"].rolling(50).mean()
@@ -116,12 +118,12 @@ def build_report(
     lines.append("\n## 枢轴位 (基于昨日)\n")
     lines.append(f"PP: {pp:.2f} | R1: {r1:.2f} | S1: {s1:.2f} | R2: {r2:.2f} | S2: {s2:.2f} | R3: {r3:.2f} | S3: {s3:.2f}\n")
 
-    if not h1.empty:
+    if include_intraday and "H1" in intraday_granularities and not h1.empty:
         h_last = h1.iloc[-1]
         lines.append("\n## 小时级快照\n")
         lines.append(f"1h 收盘: {h_last['close']:.2f}; 近 24 根均价: {h1['close'].tail(24).mean():.2f}\n")
 
-    if not m1.empty:
+    if include_intraday and {"M1", "1M"}.intersection(intraday_granularities) and not m1.empty:
         m_last = m1.iloc[-1]
         m1["RSI14"] = rsi(m1["close"], 14)
         lines.append("\n## 分钟级快照\n")

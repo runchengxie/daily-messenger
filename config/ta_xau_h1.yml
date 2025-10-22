@@ -1,0 +1,17 @@
+instrument: XAU_USD
+alignmentTimezone: America/New_York
+dailyAlignment: 17
+windows:
+  sma_fast: 50
+  sma_slow: 200
+  rsi: 14
+  atr: 14
+report:
+  filename: out/xau_report_h1.md
+  include_intraday: true
+  intraday_granularities:
+    - H1
+thresholds:
+  rsi_overbought: 70
+  rsi_oversold: 30
+  near_pct: 0.001

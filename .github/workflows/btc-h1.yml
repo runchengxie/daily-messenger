@@ -1,17 +1,15 @@
-name: xau-intraday
+name: btc-h1
 
 on:
   schedule:
-    - cron: "0 14 * * 1-5"
-    - cron: "0 * * * 1-5"
-    - cron: "*/5 * * * 1-5"
+    - cron: "2 * * * 1-5"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: xau-intraday
+  group: btc-h1
   cancel-in-progress: true
 
 env:
@@ -23,7 +21,6 @@ jobs:
     env:
       FEISHU_WEBHOOK_ALERTS: ${{ secrets.FEISHU_WEBHOOK_ALERTS }}
       FEISHU_SECRET_ALERTS: ${{ secrets.FEISHU_SECRET_ALERTS }}
-      OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,12 +45,24 @@ jobs:
         run: |
           now=$(TZ=$TZ date +%H%M)
           if [ "$now" -lt "$WINDOW_START" ] || [ "$now" -gt "$WINDOW_END" ]; then
-            echo "当前不在黄金播报窗口，提前退出。"
+            echo "当前不在 BTC 小时监控窗口，提前退出。"
             exit 0
           fi
 
-      - name: Generate XAU report
-        run: uv run python -m daily_messenger.digest.ta_report --config config/ta_xau.yml
+      - name: Ensure BTC 日线缓存存在
+        run: |
+          if [ ! -f out/btc/klines_1d.parquet ]; then
+            uv run dm btc fetch --interval 1d --lookback 10d
+          fi
+
+      - name: Refresh BTC 1h data
+        run: uv run dm btc fetch --interval 1h --lookback 5d
+
+      - name: Generate BTC hourly report
+        run: |
+          uv run dm btc report \
+            --config config/ta_btc_h1.yml \
+            --out out/btc_report_h1.md
 
       - name: Push Feishu alerts
         if: ${{ env.FEISHU_WEBHOOK_ALERTS != '' }}
@@ -61,5 +70,5 @@ jobs:
           uv run python -m daily_messenger.tools.post_feishu \
             --channel alerts \
             --mode post \
-            --summary out/xau_report.md \
-            --title "XAU/USD 技术面速递"
+            --summary out/btc_report_h1.md \
+            --title "BTC/USDT 小时级监控"

@@ -1,0 +1,65 @@
+name: xau-h1
+
+on:
+  schedule:
+    - cron: "2 * * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xau-h1
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      FEISHU_WEBHOOK_ALERTS: ${{ secrets.FEISHU_WEBHOOK_ALERTS }}
+      FEISHU_SECRET_ALERTS: ${{ secrets.FEISHU_SECRET_ALERTS }}
+      OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Sync dependencies
+        run: uv sync --locked --no-dev || uv sync --no-dev
+
+      - name: Guard trading window
+        if: ${{ github.event_name == 'schedule' }}
+        env:
+          TZ: America/New_York
+          WINDOW_START: "0600"
+          WINDOW_END: "1635"
+        run: |
+          now=$(TZ=$TZ date +%H%M)
+          if [ "$now" -lt "$WINDOW_START" ] || [ "$now" -gt "$WINDOW_END" ]; then
+            echo "当前不在黄金小时监控窗口，提前退出。"
+            exit 0
+          fi
+
+      - name: Generate XAU hourly report
+        env:
+          OANDA_TOKEN: ${{ env.OANDA_TOKEN }}
+        run: uv run python -m daily_messenger.digest.ta_report --config config/ta_xau_h1.yml
+
+      - name: Push Feishu alerts
+        if: ${{ env.FEISHU_WEBHOOK_ALERTS != '' }}
+        run: |
+          uv run python -m daily_messenger.tools.post_feishu \
+            --channel alerts \
+            --mode post \
+            --summary out/xau_report_h1.md \
+            --title "XAU/USD 小时级技术面速递"

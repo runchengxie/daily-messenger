@@ -1,10 +1,9 @@
 symbol: BTCUSDT
 exchange: binance
 report:
-  title: "BTC/USDT 每日技术简报"
+  title: "BTC/USDT 分钟级监控"
   include_intraday: true
   intraday_granularities:
-    - H1
     - M1
 session:
   tz: America/New_York

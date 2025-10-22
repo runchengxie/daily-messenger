@@ -1,0 +1,65 @@
+name: xau-d
+
+on:
+  schedule:
+    - cron: "0 14 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xau-d
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      FEISHU_WEBHOOK_DAILY: ${{ secrets.FEISHU_WEBHOOK_DAILY }}
+      FEISHU_SECRET_DAILY: ${{ secrets.FEISHU_SECRET_DAILY }}
+      OANDA_TOKEN: ${{ secrets.OANDA_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Sync dependencies
+        run: uv sync --locked --no-dev || uv sync --no-dev
+
+      - name: Guard trading window
+        if: ${{ github.event_name == 'schedule' }}
+        env:
+          TZ: America/New_York
+          WINDOW_START: "0600"
+          WINDOW_END: "1635"
+        run: |
+          now=$(TZ=$TZ date +%H%M)
+          if [ "$now" -lt "$WINDOW_START" ] || [ "$now" -gt "$WINDOW_END" ]; then
+            echo "当前不在黄金播报窗口，提前退出。"
+            exit 0
+          fi
+
+      - name: Generate XAU daily report
+        env:
+          OANDA_TOKEN: ${{ env.OANDA_TOKEN }}
+        run: uv run python -m daily_messenger.digest.ta_report --config config/ta_xau_daily.yml
+
+      - name: Push Feishu daily channel
+        if: ${{ env.FEISHU_WEBHOOK_DAILY != '' }}
+        run: |
+          uv run python -m daily_messenger.tools.post_feishu \
+            --channel daily \
+            --mode post \
+            --summary out/xau_report_daily.md \
+            --title "XAU/USD 日终技术面速递"

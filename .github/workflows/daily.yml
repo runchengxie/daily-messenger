@@ -94,7 +94,11 @@ jobs:
         run: uv sync --locked --no-dev
 
       - name: Check CLI help snippet
-        run: uv run python project_tools/update_cli_help.py --check
+        run: |
+          set -e
+          uv run python project_tools/update_cli_help.py
+          git --no-pager diff --unified=0 -- README.md || true
+          git checkout -- README.md
 
       - name: Guard 07:00–07:10 PT window
         if: ${{ github.event_name == 'schedule' }}

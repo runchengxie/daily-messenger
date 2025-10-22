@@ -94,6 +94,10 @@ jobs:
         run: uv sync --locked --no-dev
 
       - name: Check CLI help snippet
+        run: uv run python project_tools/update_cli_help.py --check
+
+      - name: Debug CLI help drift
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           set -e
           uv run python project_tools/update_cli_help.py

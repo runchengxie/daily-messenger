@@ -576,7 +576,7 @@ uv run ruff check .  # 可加 --fix 自动修复
 
 ## 自动化运维
 
-* CI 入口：`.github/workflows/daily.yml`。
+* 日报：`.github/workflows/daily.yml`。
 
   * 工作日 UTC 14:00 触发，若当前时间不在 07:00–07:10 PT 窗口内即提前结束（以 README 约定为准）。
 
@@ -588,7 +588,19 @@ uv run ruff check .  # 可加 --fix 自动修复
 
   * 如配置了 `FEISHU_WEBHOOK_DAILY`，会在部署后推送最新卡片；缺失凭证则跳过且不中断流程。
 
-* 支持 `workflow_dispatch` 手动触发；调试时可检查 `run_meta.json` 与结构化日志定位问题。
+* BTC 技术简报：`.github/workflows/btc-daily.yml`。
+
+  * 工作日 UTC 14:00 触发，并在 07:00–07:10 PT 守卫外直接退出，保持与 BTC 报告窗口一致。
+
+  * 顺序刷新 1d/1h/1m K 线，生成 `out/btc_report.md` 并向 `alerts` 频道推送纯文本摘要。
+
+* 黄金盘中监控：`.github/workflows/xau-intraday.yml`。
+
+  * 包含三条计划任务：日报窗口（UTC 14:00）、整点巡检与每 5 分钟快照；定时触发仅在 06:00–16:35 ET 范围内继续执行，其余时间直接退出。
+
+  * 运行 `ta_report` 生成 `out/xau_report.md`，若配置 `FEISHU_WEBHOOK_ALERTS` 则以 post 形式推送 `alerts` 频道。
+
+* 所有工作流均支持 `workflow_dispatch` 手动触发；调试时可检查 `out/run_meta.json` 与结构化日志定位问题。
 
 ## 数据服务限额（仅供参考，逻辑不依赖）
 

@@ -16,9 +16,9 @@ API_KEYS='{}' uv run dm run --force-score
 # 常用旗标：--date YYYY-MM-DD, --force-fetch, --force-score, --degraded
 ```
 
-> ⚠️ **定时执行窗口**：GitHub Actions 仅在工作日 UTC 14:00 触发，且会校验当前是否处于 **07:00–07:10 PT** 播报窗口。超出窗口 CI 会立即退出，不会重新排程；手动 `workflow_dispatch` 同样遵循该窗口。
+> 定时执行窗口：GitHub Actions 仅在工作日 UTC 14:00 触发，且会校验当前是否处于 07:00–07:10 PT 播报窗口。超出窗口 CI 会立即退出，不会重新排程；手动 `workflow_dispatch` 同样遵循该窗口。
 >
-> 🪟 **Windows 提示**：建议使用 WSL2；若直接在 PowerShell 下运行，可跳过 `.envrc`，改用 `setx` / `$env:VAR` 设置环境变量，再执行同样的 `uv` 命令。
+> Windows 提示**：建议使用 WSL2；若直接在 PowerShell 下运行，可跳过 `.envrc`，改用 `setx` / `$env:VAR` 设置环境变量，再执行同样的 `uv` 命令。
 
 ## 常用命令速记
 

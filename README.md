@@ -18,7 +18,7 @@ API_KEYS='{}' uv run dm run --force-score
 
 > 定时执行窗口：GitHub Actions 仅在工作日 UTC 14:00 触发，且会校验当前是否处于 07:00–07:10 PT 播报窗口。超出窗口 CI 会立即退出，不会重新排程；手动 `workflow_dispatch` 同样遵循该窗口。
 >
-> Windows 提示**：建议使用 WSL2；若直接在 PowerShell 下运行，可跳过 `.envrc`，改用 `setx` / `$env:VAR` 设置环境变量，再执行同样的 `uv` 命令。
+> Windows 提示：建议使用 WSL2；若直接在 PowerShell 下运行，可跳过 `.envrc`，改用 `setx` / `$env:VAR` 设置环境变量，再执行同样的 `uv` 命令。
 
 ## 常用命令速记
 
@@ -26,11 +26,12 @@ API_KEYS='{}' uv run dm run --force-score
 
 * `uv run dm run --force-score`：强制评分的一键流水线（默认读取 `API_KEYS` 或回退到降级路径）。
 
-> 💡 **浏览器链路（可选）**：完整复现 ETF 资金流抓取需额外安装 Node.js 20 与 Playwright。CI 会预装，本地如仅需最小化运行可跳过；若要调试该链路可参考下文“环境准备”。
+> 浏览器链路（可选）：完整复现 ETF 资金流抓取需额外安装 Node.js 20 与 Playwright。CI 会预装，本地如仅需最小化运行可跳过；若要调试该链路可参考下文“环境准备”。
 
 ## 项目概览
 
 * 场景：为内部投研或舆情团队每天生成盘前情报，GitHub Actions 按工作日 UTC 14:00 触发，产物发布到 GitHub Pages，并可同步推送飞书群机器人。
+
 * 自动化触发：CI 仅在上述定时任务与手动 `workflow_dispatch` 下运行，常规 `git push` 不会触发；定时触发也会检测是否处于 07:00–07:10 PT 播报窗口，超出则直接退出。
 
 * 语言与运行时：Python 3.11；默认使用 [uv](https://github.com/astral-sh/uv) 管理依赖和执行命令。
@@ -156,7 +157,7 @@ export EDGAR_USER_AGENT="DailyMessenger/1.0 (contact: you@example.com)"
 
 ## 环境准备
 
-> 💡 **浏览器依赖说明**：本地最小可用环境仅需 Python + uv。若要完整复现 ETF 资金流抓取的浏览器链路（与 CI 一致），请额外安装 Node.js 20 与 [Playwright](https://playwright.dev/python/docs/intro)。CI 在 `.github/workflows/daily.yml` 中通过 `setup-node` 与 `npx playwright install --with-deps` 预装这些组件，本地如需调试可按同样步骤执行。
+> 浏览器依赖说明：本地最小可用环境仅需 Python + uv。若要完整复现 ETF 资金流抓取的浏览器链路（与 CI 一致），请额外安装 Node.js 20 与 [Playwright](https://playwright.dev/python/docs/intro)。CI 在 `.github/workflows/daily.yml` 中通过 `setup-node` 与 `npx playwright install --with-deps` 预装这些组件，本地如需调试可按同样步骤执行。
 
 ### 使用 uv（推荐）
 
@@ -299,13 +300,13 @@ options:
 
 * `run_meta.json`（本次流水线的机器可读运行元数据）
 
-> 🌐 **静态预览**：本地可运行 `python -m http.server -d out 8000`，再访问 `http://localhost:8000/` 检查 Pages 成品。
+> 静态预览：本地可运行 `python -m http.server -d out 8000`，再访问 `http://localhost:8000/` 检查 Pages 成品。
 
 ## 产物契约
 
 以下示例定义了关键文件的最小字段集。任何破坏这些契约的改动都必须在本节同步更新。
 
-> 🚨 **变更提示**：凡涉及契约字段、`config/weights.yml` 或模板的改动，必须在同一 PR 内更新示例、相应快照，以及 `pytest -k contract` 用例，否则 CI 会拒绝合并。
+> 变更提示：凡涉及契约字段、`config/weights.yml` 或模板的改动，必须在同一 PR 内更新示例、相应快照，以及 `pytest -k contract` 用例，否则 CI 会拒绝合并。
 
 ### `out/etl_status.json`
 
@@ -483,6 +484,7 @@ uv run python -m daily_messenger.tools.post_feishu \
 ```
 
 * 如未显式指定 `--webhook` / `--secret`，脚本将按 `channel` 读取 `FEISHU_WEBHOOK_<CHANNEL>` 与 `FEISHU_SECRET_<CHANNEL>`。
+
 * 仍可直接运行 `uv run python -m daily_messenger.tools.post_feishu`，若 `out/digest_card.json` 存在则发送互动卡片，否则退化到 `post` 模式；缺少 Webhook 时安全跳过。
 
 ## XAU/USD 技术分析报告
@@ -499,9 +501,11 @@ uv run python -m daily_messenger.digest.ta_report --config config/ta_xau.yml
 
 推荐频率：
 
-* **日报（D）**：纽约 17:00 切日后生成完整报告，进入日报/小时频道。
-* **小时（H1）**：提供盘中轻量快照，默认与 M5 一样推送至 `alerts` 频道，配合去重与节流避免刷屏。
-* **触发/5 分钟（M5）**：仅推送告警至 `alerts` 频道，结合 Feishu 双 Webhook 做节流与静音。
+* 日报（D）：纽约 17:00 切日后生成完整报告，进入日报/小时频道。
+
+* 小时（H1）：提供盘中轻量快照，默认与 M5 一样推送至 `alerts` 频道，配合去重与节流避免刷屏。
+
+* 触发/5 分钟（M5）：仅推送告警至 `alerts` 频道，结合 Feishu 双 Webhook 做节流与静音。
 
 提示：OANDA 返回的 volume 是 tick 计数，适用于波动度评估，不等同于交易所成交量。生产环境请根据需要替换为正式实时数据源。
 
@@ -517,7 +521,9 @@ uv run dm btc report --out out/btc_report.md
 ```
 
 * 抓取器按 Binance → Kraken → Bitstamp 顺序回退，写入 `out/btc/klines_<interval>.parquet` 并记录降级状态。
+
 * 报告默认计算 SMA50/200、RSI14、ATR14 与枢轴位，可通过 `config/ta_btc.yml` 调整标题或时区。
+
 * GitHub Actions 中的 `btc-daily.yml` 会在工作日 UTC 14:00（07:00–07:10 PT 窗口内）自动运行上述流程并推送 Feishu alerts 通道。
 
 ## 日志与观测
@@ -530,17 +536,23 @@ uv run dm btc report --out out/btc_report.md
 
 ## 故障排查指南
 
-**10 秒自检：**
+10 秒自检：
 
 1. 查看 `out/run_meta.json`，确认哪个阶段首次返回 `status != "ok"`。
+
 2. 打开 `out/etl_status.json`，核对缺失数据源与 `message` 提示。
+
 3. 检查当前 shell 是否注入了 `API_KEYS` / `API_KEYS_PATH` 及浏览器链路变量。
+
 4. 对照本地时间是否落在 07:00–07:10 PT 播报窗口（CI 同样受限）。
+
 5. Playwright/ETF 场景：确认 `FARSIDE_COOKIES`、`FARSIDE_UA`、`EDGAR_USER_AGENT` 是否就绪，必要时重新抓取。
 
-* **缺少 `API_KEYS`**：流水线会自动进入降级模式，模拟数据会在网页与摘要顶部加粗提示，同时 `out/etl_status.json.ok=false` 与 `run_meta.json` 中的 `degraded=true`。如需验证真实接口，可在本地导入最小化凭证并重新执行。
-* **未配置飞书 Webhook**：当目标频道 (`FEISHU_WEBHOOK_DAILY` / `FEISHU_WEBHOOK_ALERTS`) 缺失时，推送脚本会安全跳过并返回 0，同时记录 `feishu_skip_no_webhook` 事件，不会阻断 CI。
-* **如何定位缺失字段**：结构化日志输出在 `out/run_meta.json` 中可按步骤查状态；产物契约失配时，请对照下文“产物契约”示例，同时运行 `pytest -k contract` 触发合同测试以获得具体断言。
+* 缺少 `API_KEYS`：流水线会自动进入降级模式，模拟数据会在网页与摘要顶部加粗提示，同时 `out/etl_status.json.ok=false` 与 `run_meta.json` 中的 `degraded=true`。如需验证真实接口，可在本地导入最小化凭证并重新执行。
+
+* 未配置飞书 Webhook：当目标频道 (`FEISHU_WEBHOOK_DAILY` / `FEISHU_WEBHOOK_ALERTS`) 缺失时，推送脚本会安全跳过并返回 0，同时记录 `feishu_skip_no_webhook` 事件，不会阻断 CI。
+
+* 如何定位缺失字段：结构化日志输出在 `out/run_meta.json` 中可按步骤查状态；产物契约失配时，请对照下文“产物契约”示例，同时运行 `pytest -k contract` 触发合同测试以获得具体断言。
 
 ## 测试与质量保障
 

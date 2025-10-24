@@ -115,7 +115,7 @@ class _GeminiSettings:
     timeout: float
     extra_instructions: str = ""
 
-DEFAULT_GEMINI_MODEL = "gemini-2.0-pro-exp"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
 DEFAULT_GEMINI_TIMEOUT = 45.0
 DEFAULT_GEMINI_ENABLE_NETWORK = True
 NEWS_TAG_PATTERN = re.compile(r"<news>(.*?)</news>", re.IGNORECASE | re.DOTALL)
@@ -673,6 +673,8 @@ def _fetch_gemini_market_news(
         )
 
     key_queue: deque[Tuple[str, str]] = deque(settings.keys)
+    if len(key_queue) > 1:
+        key_queue.rotate(-random.randint(0, len(key_queue) - 1))
     beijing_now = now_utc.astimezone(CHINA_TZ)
 
     for spec in GEMINI_MARKET_SPECS:

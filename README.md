@@ -157,23 +157,24 @@ repo/
 
 ### Gemini 市场资讯（可选）
 
-* 18:00（北京时间）日报会串行调用 Gemini `generateContent`，分别汇总美股、日股、港股、A 股与黄金上一完整交易日的市场资讯。模型默认为 `gemini-2.0-pro-exp`，提示词内置合规提醒并要求输出放在 `<news>...</news>` 标签中。
+* 18:00（北京时间）日报会串行调用 Gemini `generateContent`，分别汇总美股、日股、港股、A 股与黄金上一完整交易日的市场资讯。模型默认为 `gemini-2.5-pro`，提示词内置合规提醒并要求输出放在 `<news>...</news>` 标签中。
 * 配置方式：在 `api_keys.json` 或 `API_KEYS` 内联 JSON 中新增 `ai_news` 段，例如：
 
     ```json
     {
       "ai_news": {
-        "model": "gemini-2.0-pro-exp",
+        "model": "gemini-2.5-pro",
         "enable_network": true,
         "keys": [
           "GEMINI_PRIMARY_KEY",
-          "GEMINI_BACKUP_KEY"
+          "GEMINI_BACKUP_KEY",
+          "GEMINI_RESERVE_KEY"
         ]
       }
     }
     ```
 
-    `keys` 数组支持多个凭证，流水线会遇到配额/错误时自动轮换。可选字段 `extra_prompt` 用于追加自定义提示语。
+    `keys` 数组支持多个凭证（建议至少三把，以便阶梯降配额），流水线会遇到配额/错误时自动轮换。可选字段 `extra_prompt` 用于追加自定义提示语。
 
 * 生成结果写入 `out/raw_events.json.ai_updates`，Digest 阶段会展示该列表的前三条以供飞书卡片预览，并在 HTML 报告中展开全部条目。
 

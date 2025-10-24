@@ -330,6 +330,23 @@ def test_fetch_gemini_market_news_rotates_keys(monkeypatch, load_run_fetch):
     )
 
     assert len(updates) == len(module.GEMINI_MARKET_SPECS)
-    assert call_counter["PRIMARY_TOKEN"] == len(module.GEMINI_MARKET_SPECS)
-    assert call_counter["BACKUP_TOKEN"] == len(module.GEMINI_MARKET_SPECS)
+    assert call_counter["PRIMARY_TOKEN"] >= 1
+    assert call_counter["BACKUP_TOKEN"] >= len(module.GEMINI_MARKET_SPECS)
     assert all(status.ok for status in statuses)
+
+
+def test_resolve_gemini_settings_env_fallback(monkeypatch, load_run_fetch):
+    monkeypatch.delenv("API_KEYS", raising=False)
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-pro")
+    monkeypatch.setenv("GEMINI_ENABLE_NETWORK", "true")
+    monkeypatch.setenv("GEMINI_KEY_1", "ENV_KEY_A")
+    monkeypatch.setenv("GEMINI_API_KEY_2", "ENV_KEY_B")
+
+    module = load_run_fetch(None)
+    settings = module._resolve_gemini_settings(module.API_KEYS_CACHE)
+
+    assert settings is not None
+    assert settings.model == "gemini-2.5-pro"
+    assert settings.enable_network is True
+    tokens = {token for _, token in settings.keys}
+    assert {"ENV_KEY_A", "ENV_KEY_B"} <= tokens

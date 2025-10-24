@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import quote
 from xml.etree import ElementTree as ET
 
@@ -351,6 +351,8 @@ def _load_api_keys(logger: logging.Logger | None) -> Dict[str, str]:
         if te_user and te_password:
             data["trading_economics"] = f"{te_user}:{te_password}"
 
+    _merge_gemini_env_config(data, env)
+
     try:
         normalized = _normalize_api_keys(data)
     except ApiKeyValidationError as exc:
@@ -408,6 +410,89 @@ def _resolve_arxiv_config(config: Dict[str, Any]) -> Tuple[Dict[str, Any], float
         "sortOrder": params["sort_order"],
     }
     return request_params, throttle
+
+
+def _merge_gemini_env_config(data: Dict[str, Any], env: Mapping[str, str]) -> None:
+    existing_section = data.get("ai_news")
+    if isinstance(existing_section, dict):
+        section: Dict[str, Any] = dict(existing_section)
+    else:
+        section = {}
+
+    def _coerce_str(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    env_candidates: List[Tuple[str, str]] = []
+
+    def _add_candidate(raw: Optional[str], label: str) -> None:
+        token = _coerce_str(raw if isinstance(raw, str) else None)
+        if token:
+            env_candidates.append((label, token))
+
+    # Single-key fallbacks
+    _add_candidate(env.get("GEMINI_API_KEY"), "env_primary")
+    _add_candidate(env.get("GEMINI_KEY"), "env_primary")
+    _add_candidate(env.get("GOOGLE_GEMINI_API_KEY"), "env_primary")
+
+    # CSV-style list
+    csv_payload = env.get("GEMINI_API_KEYS") or env.get("GEMINI_KEYS")
+    if csv_payload:
+        for idx, segment in enumerate(csv_payload.split(","), start=1):
+            _add_candidate(segment, f"env_{idx}")
+
+    # Enumerated keys
+    for idx in range(1, 11):
+        _add_candidate(env.get(f"GEMINI_API_KEY_{idx}"), f"env_{idx}")
+        _add_candidate(env.get(f"GEMINI_KEY_{idx}"), f"env_{idx}")
+
+    # Named helpers
+    for var, label in (
+        ("GEMINI_PRIMARY_KEY", "primary"),
+        ("GEMINI_BACKUP_KEY", "backup"),
+        ("GEMINI_RESERVE_KEY", "reserve"),
+    ):
+        _add_candidate(env.get(var), label)
+
+    if env_candidates:
+        existing_keys_raw = section.get("keys")
+        combined: List[Any] = []
+        if isinstance(existing_keys_raw, list):
+            combined.extend(existing_keys_raw)
+
+        def _extract_token(entry: Any) -> Optional[str]:
+            if isinstance(entry, str):
+                return _coerce_str(entry)
+            if isinstance(entry, Mapping):
+                value = entry.get("value") or entry.get("key") or entry.get("api_key")
+                if isinstance(value, str):
+                    return _coerce_str(value)
+            return None
+
+        seen_tokens = {token for token in (_extract_token(item) for item in combined) if token}
+        for label, token in env_candidates:
+            if token in seen_tokens:
+                continue
+            combined.append({"value": token, "label": label})
+            seen_tokens.add(token)
+        section["keys"] = combined
+
+    model_env = _coerce_str(env.get("GEMINI_MODEL") or env.get("GEMINI_DEFAULT_MODEL"))
+    if model_env:
+        section["model"] = model_env
+
+    enable_env = env.get("GEMINI_ENABLE_NETWORK") or env.get("GEMINI_GOOGLE_SEARCH")
+    if enable_env is not None:
+        section["enable_network"] = _env_truthy(str(enable_env))
+
+    extra_prompt_env = _coerce_str(env.get("GEMINI_EXTRA_PROMPT"))
+    if extra_prompt_env:
+        section["extra_prompt"] = extra_prompt_env
+
+    if section:
+        data["ai_news"] = section
 
 
 def _collect_gemini_keys(config: Dict[str, Any]) -> List[Tuple[str, str]]:

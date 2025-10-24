@@ -176,6 +176,18 @@ repo/
 
     `keys` 数组支持多个凭证（建议至少三把，以便阶梯降配额），流水线会遇到配额/错误时自动轮换。可选字段 `extra_prompt` 用于追加自定义提示语。
 
+    若云端环境难以挂载 JSON，可改用环境变量（示例参见 `.env.example`）：
+
+    ```dotenv
+    GEMINI_MODEL=gemini-2.5-pro
+    GEMINI_ENABLE_NETWORK=1
+    GEMINI_KEY_1=your_gemini_key_1
+    GEMINI_API_KEY_2=your_gemini_key_2
+    GEMINI_RESERVE_KEY=your_gemini_key_3
+    ```
+
+    配置解析器会自动把这些环境变量与 `ai_news` 段合并，优先级为文件/内联 JSON → 环境变量。
+
 * 生成结果写入 `out/raw_events.json.ai_updates`，Digest 阶段会展示该列表的前三条以供飞书卡片预览，并在 HTML 报告中展开全部条目。
 
 ### 浏览器链路与礼貌抓取变量

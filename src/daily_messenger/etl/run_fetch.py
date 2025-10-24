@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, cast
 from urllib.parse import quote
 from xml.etree import ElementTree as ET
 
@@ -119,6 +119,11 @@ DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
 DEFAULT_GEMINI_TIMEOUT = 45.0
 DEFAULT_GEMINI_ENABLE_NETWORK = True
 NEWS_TAG_PATTERN = re.compile(r"<news>(.*?)</news>", re.IGNORECASE | re.DOTALL)
+GEMINI_MAX_RETRIES = 3
+GEMINI_BACKOFF_START = 0.8
+GEMINI_BACKOFF_FACTOR = 2.0
+GEMINI_BACKOFF_JITTER = 0.35
+GEMINI_INTER_MARKET_DELAY_RANGE = (0.8, 1.6)
 
 GEMINI_MARKET_SPECS: Tuple[_MarketNewsSpec, ...] = (
     _MarketNewsSpec(
@@ -655,19 +660,28 @@ def _call_gemini_generate_content(
         "User-Agent": USER_AGENT,
         "Content-Type": "application/json",
     }
-    resp = requests.post(
-        url,
-        params=params,
-        headers=headers,
-        json=body,
-        timeout=timeout,
+    per_request_timeout = max(timeout, 5.0)
+    hard_deadline = max(per_request_timeout * 2.5, per_request_timeout + 10.0)
+    policy = RetryPolicy(
+        retries=GEMINI_MAX_RETRIES,
+        backoff_start=GEMINI_BACKOFF_START,
+        backoff_factor=GEMINI_BACKOFF_FACTOR,
+        jitter=GEMINI_BACKOFF_JITTER,
+        max_sleep=8.0,
+        per_request_timeout=per_request_timeout,
+        hard_deadline=hard_deadline,
     )
-    resp.raise_for_status()
-    try:
-        payload = resp.json()
-    except ValueError as exc:  # noqa: BLE001
-        raise ValueError("Gemini 响应不是 JSON") from exc
-    return payload
+    payload = _request_json(
+        url,
+        method="POST",
+        params=params,
+        json_body=body,
+        headers=headers,
+        policy=policy,
+    )
+    if not isinstance(payload, dict):
+        raise ValueError("Gemini 响应不是 JSON 对象")
+    return cast(Dict[str, Any], payload)
 
 
 def _extract_gemini_text(payload: Dict[str, Any]) -> str:
@@ -762,7 +776,11 @@ def _fetch_gemini_market_news(
         key_queue.rotate(-random.randint(0, len(key_queue) - 1))
     beijing_now = now_utc.astimezone(CHINA_TZ)
 
-    for spec in GEMINI_MARKET_SPECS:
+    for index, spec in enumerate(GEMINI_MARKET_SPECS):
+        if index > 0 and not THROTTLE_DISABLED:
+            lower, upper = GEMINI_INTER_MARKET_DELAY_RANGE
+            delay = random.uniform(lower, upper)
+            _sleep_exact(delay)
         if not key_queue:
             statuses.append(
                 FetchStatus(

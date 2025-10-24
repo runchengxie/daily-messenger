@@ -111,6 +111,39 @@ def test_run_defaults_to_post_when_card_missing(
     assert any("AI 总分 60" in block[0]["text"] for block in content_blocks)
 
 
+def test_post_mode_groups_sections(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    summary_path = tmp_path / "digest_summary.txt"
+    summary_path.write_text(
+        "美股｜三点速览：\n- 指数反弹\n- 科技走强\n\n黄金｜两点：\n- 美元走弱\n- 持仓回升\n",
+        encoding="utf-8",
+    )
+    captured: dict = {}
+
+    def fake_post(url: str, json: dict | None = None, timeout: int | None = None):
+        captured["payload"] = json
+        return DummyResponse()
+
+    monkeypatch.setattr(post_feishu.requests, "post", fake_post)
+
+    exit_code = post_feishu.run(
+        [
+            "--webhook",
+            "https://example.com/hook",
+            "--summary",
+            str(summary_path),
+            "--mode",
+            "post",
+        ]
+    )
+
+    assert exit_code == 0
+    blocks = captured["payload"]["content"]["post"]["zh_cn"]["content"]
+    assert len(blocks) == 2
+    assert blocks[0][0]["text"].startswith("美股｜三点速览")
+    assert blocks[0][0]["text"].endswith("\n")
+    assert "黄金" in blocks[1][0]["text"]
+
+
 def test_channel_alerts_reads_dedicated_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

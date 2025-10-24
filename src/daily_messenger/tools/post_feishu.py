@@ -40,6 +40,23 @@ def _sign_if_needed(secret: str | None) -> Dict[str, str]:
     return {"timestamp": timestamp, "sign": sign}
 
 
+def _split_summary_sections(summary: str) -> list[str]:
+    sections: list[str] = []
+    current: list[str] = []
+    for raw_line in summary.splitlines():
+        if raw_line.strip():
+            current.append(raw_line.rstrip())
+            continue
+        if current:
+            sections.append("\n".join(current))
+            current = []
+    if current:
+        sections.append("\n".join(current))
+    if not sections:
+        sections.append("今日暂无摘要")
+    return sections
+
+
 def _build_payload(
     args: argparse.Namespace, summary: str, card: str | None
 ) -> Dict[str, Any]:
@@ -49,7 +66,7 @@ def _build_payload(
         return {"msg_type": "interactive", "card": json.loads(card)}
 
     # post 模式
-    zh_lines = summary.splitlines() or ["今日暂无摘要"]
+    sections = _split_summary_sections(summary)
     return {
         "msg_type": "post",
         "content": {
@@ -57,7 +74,13 @@ def _build_payload(
                 "zh_cn": {
                     "title": args.title or "内参播报",
                     "content": [
-                        [{"tag": "text", "text": line + "\n"}] for line in zh_lines
+                        [
+                            {
+                                "tag": "text",
+                                "text": section if section.endswith("\n") else section + "\n",
+                            }
+                        ]
+                        for section in sections
                     ],
                 }
             }

@@ -243,6 +243,7 @@ def test_fetch_gemini_market_news_generates_updates(monkeypatch, load_run_fetch)
             }
         }
     )
+    module.THROTTLE_DISABLED = True
 
     def fake_call(model, api_key, prompt, enable_network, timeout):
         assert model == "gemini-test"
@@ -293,6 +294,7 @@ def test_fetch_gemini_market_news_rotates_keys(monkeypatch, load_run_fetch):
             }
         }
     )
+    module.THROTTLE_DISABLED = True
 
     call_counter = {"PRIMARY_TOKEN": 0, "BACKUP_TOKEN": 0}
 

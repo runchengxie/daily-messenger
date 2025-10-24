@@ -1,6 +1,7 @@
 import importlib
 import json
 import sys
+from datetime import datetime, timezone
 
 import pytest
 
@@ -230,3 +231,105 @@ def test_run_includes_ai_sources(tmp_path, monkeypatch, load_run_fetch):
     assert "RSS Event" in titles
     assert "arXiv: Paper" in titles
     assert payload["ai_updates"][0]["title"] == "RSS Event"
+
+
+def test_fetch_gemini_market_news_generates_updates(monkeypatch, load_run_fetch):
+    module = load_run_fetch(
+        {
+            "ai_news": {
+                "model": "gemini-test",
+                "keys": ["PRIMARY_TOKEN"],
+                "enable_network": False,
+            }
+        }
+    )
+
+    def fake_call(model, api_key, prompt, enable_network, timeout):
+        assert model == "gemini-test"
+        assert api_key == "PRIMARY_TOKEN"
+        assert "<news>" in prompt
+        return {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": "<news>- 要点 A\n- 要点 B</news>",
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(module, "_call_gemini_generate_content", fake_call)
+
+    now = datetime(2024, 4, 2, 10, 0, tzinfo=timezone.utc)
+    updates, statuses = module._fetch_gemini_market_news(
+        now,
+        {
+            "ai_news": {
+                "model": "gemini-test",
+                "keys": ["PRIMARY_TOKEN"],
+                "enable_network": False,
+            }
+        },
+        logger=None,
+    )
+
+    assert len(updates) == len(module.GEMINI_MARKET_SPECS)
+    assert all(update["source"] == "gemini" for update in updates)
+    assert all(update["summary"] for update in updates)
+    assert all(status.ok for status in statuses)
+
+
+def test_fetch_gemini_market_news_rotates_keys(monkeypatch, load_run_fetch):
+    module = load_run_fetch(
+        {
+            "ai_news": {
+                "model": "gemini-test",
+                "keys": ["PRIMARY_TOKEN", "BACKUP_TOKEN"],
+                "enable_network": False,
+            }
+        }
+    )
+
+    call_counter = {"PRIMARY_TOKEN": 0, "BACKUP_TOKEN": 0}
+
+    def fake_call(model, api_key, prompt, enable_network, timeout):
+        call_counter[api_key] += 1
+        if api_key == "PRIMARY_TOKEN":
+            raise module.requests.HTTPError("quota exceeded")
+        return {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": "<news>- OK</news>",
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(module, "_call_gemini_generate_content", fake_call)
+
+    now = datetime(2024, 4, 3, 12, 0, tzinfo=timezone.utc)
+    updates, statuses = module._fetch_gemini_market_news(
+        now,
+        {
+            "ai_news": {
+                "model": "gemini-test",
+                "keys": ["PRIMARY_TOKEN", "BACKUP_TOKEN"],
+                "enable_network": False,
+            }
+        },
+        logger=None,
+    )
+
+    assert len(updates) == len(module.GEMINI_MARKET_SPECS)
+    assert call_counter["PRIMARY_TOKEN"] == len(module.GEMINI_MARKET_SPECS)
+    assert call_counter["BACKUP_TOKEN"] == len(module.GEMINI_MARKET_SPECS)
+    assert all(status.ok for status in statuses)

@@ -14,14 +14,16 @@ import json
 import logging
 import os
 import random
+import re
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import quote
 from xml.etree import ElementTree as ET
 
@@ -41,6 +43,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 OUT_DIR = PROJECT_ROOT / "out"
 STATE_DIR = PROJECT_ROOT / "state"
 PACIFIC_TZ = ZoneInfo("America/Los_Angeles")
+CHINA_TZ = ZoneInfo("Asia/Shanghai")
 
 ALPHA_VANTAGE_SYMBOLS = {
     "SPX": "SPY",  # S&P 500 ETF proxy
@@ -94,10 +97,116 @@ DEFAULT_ARXIV_THROTTLE = 3.0
 THROTTLE_DISABLED = os.getenv("DM_DISABLE_THROTTLE", "").lower() in {"1", "true", "yes"}
 
 
+@dataclass(frozen=True)
+class _MarketNewsSpec:
+    market: str
+    label: str
+    timezone: ZoneInfo
+    close_hour: int
+    close_minute: int
+    scope: str
+
+
+@dataclass
+class _GeminiSettings:
+    model: str
+    keys: List[Tuple[str, str]]
+    enable_network: bool
+    timeout: float
+    extra_instructions: str = ""
+
+DEFAULT_GEMINI_MODEL = "gemini-2.0-pro-exp"
+DEFAULT_GEMINI_TIMEOUT = 45.0
+DEFAULT_GEMINI_ENABLE_NETWORK = True
+NEWS_TAG_PATTERN = re.compile(r"<news>(.*?)</news>", re.IGNORECASE | re.DOTALL)
+
+GEMINI_MARKET_SPECS: Tuple[_MarketNewsSpec, ...] = (
+    _MarketNewsSpec(
+        market="us",
+        label="美股",
+        timezone=ZoneInfo("America/New_York"),
+        close_hour=16,
+        close_minute=0,
+        scope="美国股市",
+    ),
+    _MarketNewsSpec(
+        market="jp",
+        label="日股",
+        timezone=ZoneInfo("Asia/Tokyo"),
+        close_hour=15,
+        close_minute=0,
+        scope="日本股市",
+    ),
+    _MarketNewsSpec(
+        market="hk",
+        label="港股",
+        timezone=ZoneInfo("Asia/Hong_Kong"),
+        close_hour=16,
+        close_minute=0,
+        scope="香港股市",
+    ),
+    _MarketNewsSpec(
+        market="cn",
+        label="A 股",
+        timezone=ZoneInfo("Asia/Shanghai"),
+        close_hour=15,
+        close_minute=0,
+        scope="中国内地 A 股市场",
+    ),
+    _MarketNewsSpec(
+        market="gold",
+        label="黄金",
+        timezone=ZoneInfo("America/New_York"),
+        close_hour=17,
+        close_minute=0,
+        scope="国际黄金市场",
+    ),
+)
+
+
 def _sleep(seconds: float) -> None:
     if seconds <= 0 or THROTTLE_DISABLED:
         return
     time.sleep(seconds)
+
+
+def _business_day_on_or_before(day: datetime) -> datetime:
+    candidate = day
+    while candidate.weekday() >= 5:
+        candidate -= timedelta(days=1)
+    return candidate
+
+
+def _resolve_market_trading_date(
+    now_utc: datetime, spec: _MarketNewsSpec
+) -> datetime:
+    local_now = now_utc.astimezone(spec.timezone)
+    candidate = datetime(
+        local_now.year,
+        local_now.month,
+        local_now.day,
+        0,
+        0,
+        0,
+        tzinfo=spec.timezone,
+    )
+    close_dt = datetime(
+        local_now.year,
+        local_now.month,
+        local_now.day,
+        spec.close_hour,
+        spec.close_minute,
+        0,
+        tzinfo=spec.timezone,
+    )
+    if local_now < close_dt:
+        candidate -= timedelta(days=1)
+    candidate = _business_day_on_or_before(candidate)
+    return candidate
+
+
+def _format_cn_date(day: datetime) -> str:
+    return day.strftime("%Y年%m月%d日")
 
 
 @dataclass
@@ -113,6 +222,8 @@ class _QuoteSnapshot:
     close: float
     change_pct: float
     source: str
+
+
 
 
 def _ensure_out_dir() -> None:
@@ -297,6 +408,378 @@ def _resolve_arxiv_config(config: Dict[str, Any]) -> Tuple[Dict[str, Any], float
         "sortOrder": params["sort_order"],
     }
     return request_params, throttle
+
+
+def _collect_gemini_keys(config: Dict[str, Any]) -> List[Tuple[str, str]]:
+    keys: List[Tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def _push(value: Any, label: str) -> None:
+        if not isinstance(value, str):
+            return
+        token = value.strip()
+        if not token or token in seen:
+            return
+        keys.append((label, token))
+        seen.add(token)
+
+    raw_keys = config.get("keys")
+    if isinstance(raw_keys, list):
+        for idx, entry in enumerate(raw_keys, start=1):
+            if isinstance(entry, str):
+                _push(entry, f"key_{idx}")
+            elif isinstance(entry, dict):
+                token = entry.get("value") or entry.get("key") or entry.get("api_key")
+                label = str(entry.get("label") or entry.get("name") or f"key_{idx}")
+                _push(token, label)
+    else:
+        single_candidate = (
+            config.get("key")
+            or config.get("api_key")
+            or config.get("token")
+            or config.get("value")
+        )
+        if isinstance(single_candidate, str):
+            _push(single_candidate, "primary")
+
+    # Allow arbitrary extra fields to serve as keys when prefixed with gemini
+    for field, value in config.items():
+        if not isinstance(field, str):
+            continue
+        lowered = field.lower()
+        if lowered.startswith("gemini") and lowered not in {"gemini_model"}:
+            _push(value, field)
+
+    return keys
+
+
+def _resolve_gemini_settings(api_keys: Dict[str, Any]) -> Optional[_GeminiSettings]:
+    section = api_keys.get("ai_news")
+    if isinstance(section, str):
+        # Attempt to parse JSON if provided as a string
+        try:
+            section = json.loads(section)
+        except json.JSONDecodeError:
+            section = None
+
+    if not isinstance(section, dict):
+        # Fallback: gather top-level keys with gemini prefix
+        raw_keys: List[Tuple[str, str]] = []
+        for field, value in api_keys.items():
+            if not isinstance(field, str):
+                continue
+            lowered = field.lower()
+            if lowered.startswith("gemini"):
+                if isinstance(value, str):
+                    token = value.strip()
+                    if token:
+                        raw_keys.append((field, token))
+        if not raw_keys:
+            return None
+        return _GeminiSettings(
+            model=DEFAULT_GEMINI_MODEL,
+            keys=raw_keys,
+            enable_network=DEFAULT_GEMINI_ENABLE_NETWORK,
+            timeout=DEFAULT_GEMINI_TIMEOUT,
+        )
+
+    model_candidate = section.get("model") or section.get("gemini_model")
+    model = (
+        str(model_candidate).strip()
+        if isinstance(model_candidate, str) and model_candidate.strip()
+        else DEFAULT_GEMINI_MODEL
+    )
+
+    enable_network_candidate = section.get("enable_network")
+    if enable_network_candidate is None:
+        enable_network_candidate = section.get("google_search")
+    enable_network = (
+        bool(enable_network_candidate)
+        if isinstance(enable_network_candidate, bool)
+        else _env_truthy(str(enable_network_candidate))
+        if isinstance(enable_network_candidate, str)
+        else DEFAULT_GEMINI_ENABLE_NETWORK
+    )
+
+    timeout_candidate = section.get("timeout_seconds") or section.get("timeout")
+    if isinstance(timeout_candidate, (int, float)) and timeout_candidate > 0:
+        timeout = float(timeout_candidate)
+    else:
+        timeout = DEFAULT_GEMINI_TIMEOUT
+
+    extra_prompt_candidate = section.get("extra_prompt") or section.get(
+        "extra_instructions"
+    )
+    extra_instructions = (
+        str(extra_prompt_candidate).strip()
+        if isinstance(extra_prompt_candidate, str)
+        else ""
+    )
+
+    keys = _collect_gemini_keys(section)
+    if not keys:
+        # Permit fallback to top-level entries if nested keys missing
+        for field, value in api_keys.items():
+            if not isinstance(field, str):
+                continue
+            lowered = field.lower()
+            if lowered.startswith("gemini"):
+                if isinstance(value, str):
+                    token = value.strip()
+                    if token:
+                        keys.append((field, token))
+    if not keys:
+        return None
+
+    return _GeminiSettings(
+        model=model,
+        keys=keys,
+        enable_network=enable_network,
+        timeout=timeout,
+        extra_instructions=extra_instructions,
+    )
+
+
+def _call_gemini_generate_content(
+    model: str,
+    api_key: str,
+    prompt: str,
+    enable_network: bool,
+    timeout: float,
+) -> Dict[str, Any]:
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent"
+    )
+    params = {"key": api_key}
+    body: Dict[str, Any] = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "text": prompt,
+                    }
+                ],
+            }
+        ]
+    }
+    if enable_network:
+        body["tools"] = [{"googleSearchRetrieval": {}}]
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Content-Type": "application/json",
+    }
+    resp = requests.post(
+        url,
+        params=params,
+        headers=headers,
+        json=body,
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    try:
+        payload = resp.json()
+    except ValueError as exc:  # noqa: BLE001
+        raise ValueError("Gemini 响应不是 JSON") from exc
+    return payload
+
+
+def _extract_gemini_text(payload: Dict[str, Any]) -> str:
+    candidates = payload.get("candidates")
+    if not isinstance(candidates, list):
+        return ""
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        content = candidate.get("content")
+        if not isinstance(content, dict):
+            continue
+        parts = content.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str) and text.strip():
+                    return text.strip()
+    return ""
+
+
+def _extract_news_section(text: str) -> str:
+    if not text:
+        return ""
+    sections = [match.strip() for match in NEWS_TAG_PATTERN.findall(text) if match]
+    if sections:
+        combined = "\n".join(section.strip() for section in sections if section.strip())
+        return combined.strip()
+    # Fallback: strip any outer tags and return trimmed text
+    return text.strip()
+
+
+def _build_market_prompt(
+    spec: _MarketNewsSpec,
+    target_day: datetime,
+    now_beijing: datetime,
+    settings: _GeminiSettings,
+) -> str:
+    target_iso = target_day.date().isoformat()
+    target_cn = _format_cn_date(target_day.date())
+    now_cn = now_beijing.strftime("%Y年%m月%d日 %H:%M")
+    extra = f"\n{settings.extra_instructions.strip()}" if settings.extra_instructions else ""
+    return (
+        f"今天的日期是北京时间 {now_cn}。"
+        f"请联网搜索并总结 {target_cn}（交易日 {target_iso}）{spec.scope}的主要资讯。"
+        "重点包括：核心指数或价格的收盘表现与涨跌幅、盘面主题或板块亮点、以及可能影响市场的重大公司事件或宏观新闻。"
+        "如果查询结果显示该日期尚未结束或被视为未来时间，请自动回退到最近一个已经结束的交易日，并在摘要开头注明实际覆盖的日期与原因。"
+        "输出需要使用中文、保持客观中性语气；涉及新疆、香港、台湾等敏感议题时请遵循国内审核要求并避免额外延展。"
+        "请将完整内容放在单个 <news> 标签中，标签内使用 Markdown 列出 3-5 条重点，每条最好附带来源或链接。"
+        "除 <news>...</news> 外不要输出其它文本。"
+        f"{extra}"
+    )
+
+
+def _fetch_gemini_market_news(
+    now_utc: datetime,
+    api_keys: Dict[str, Any],
+    logger: Optional[logging.Logger],
+) -> Tuple[List[Dict[str, Any]], List[FetchStatus]]:
+    settings = _resolve_gemini_settings(api_keys)
+    if settings is None:
+        return (
+            [],
+            [
+                FetchStatus(
+                    name="gemini_news",
+                    ok=True,
+                    message="Gemini AI 未配置，跳过市场资讯",
+                )
+            ],
+        )
+
+    updates: List[Dict[str, Any]] = []
+    statuses: List[FetchStatus] = []
+
+    if not settings.keys:
+        return (
+            updates,
+            [
+                FetchStatus(
+                    name="gemini_news",
+                    ok=False,
+                    message="Gemini AI 未提供可用的 API key",
+                )
+            ],
+        )
+
+    key_queue: deque[Tuple[str, str]] = deque(settings.keys)
+    beijing_now = now_utc.astimezone(CHINA_TZ)
+
+    for spec in GEMINI_MARKET_SPECS:
+        if not key_queue:
+            statuses.append(
+                FetchStatus(
+                    name=f"gemini_news_{spec.market}",
+                    ok=False,
+                    message="缺少 Gemini API key",
+                )
+            )
+            continue
+
+        target_day = _resolve_market_trading_date(now_utc, spec)
+        prompt = _build_market_prompt(spec, target_day, beijing_now, settings)
+
+        response_text = ""
+        error_messages: List[str] = []
+
+        for _ in range(len(key_queue)):
+            label, token = key_queue[0]
+            try:
+                payload = _call_gemini_generate_content(
+                    settings.model,
+                    token,
+                    prompt,
+                    settings.enable_network,
+                    settings.timeout,
+                )
+            except requests.HTTPError as exc:
+                error_messages.append(f"{label}: HTTP {exc}")
+                key_queue.rotate(-1)
+                continue
+            except Exception as exc:  # noqa: BLE001
+                error_messages.append(f"{label}: {exc}")
+                key_queue.rotate(-1)
+                continue
+
+            text = _extract_gemini_text(payload)
+            if not text:
+                error_messages.append(f"{label}: 空响应")
+                key_queue.rotate(-1)
+                continue
+
+            response_text = text
+            key_queue.rotate(-1)
+            break
+
+        if not response_text:
+            detail = "；".join(error_messages[-3:]) if error_messages else "未知错误"
+            statuses.append(
+                FetchStatus(
+                    name=f"gemini_news_{spec.market}",
+                    ok=False,
+                    message=f"{spec.label} 摘要生成失败（{detail}）",
+                )
+            )
+            continue
+
+        news_section = _extract_news_section(response_text)
+        if not news_section:
+            statuses.append(
+                FetchStatus(
+                    name=f"gemini_news_{spec.market}",
+                    ok=False,
+                    message=f"{spec.label} 响应缺少 <news> 内容",
+                )
+            )
+            continue
+
+        summary_lines = [
+            line.rstrip()
+            for line in news_section.splitlines()
+            if line.strip()
+        ]
+        summary = "\n".join(summary_lines)
+        update = {
+            "title": f"{spec.label} {target_day.date().isoformat()} 交易日资讯",
+            "market": spec.market,
+            "date": target_day.date().isoformat(),
+            "summary": summary,
+            "source": "gemini",
+            "provider": "google_gemini",
+            "model": settings.model,
+            "prompt_scope": spec.scope,
+            "prompt_date": target_day.date().isoformat(),
+            "requested_beijing": beijing_now.isoformat(),
+            "raw_text": news_section,
+        }
+        updates.append(update)
+        statuses.append(
+            FetchStatus(
+                name=f"gemini_news_{spec.market}",
+                ok=True,
+                message=f"{spec.label} 摘要生成成功",
+            )
+        )
+        if logger:
+            log(
+                logger,
+                logging.INFO,
+                "gemini_news_generated",
+                market=spec.market,
+                prompt_date=update["prompt_date"],
+            )
+
+    return updates, statuses
 
 
 def _load_configuration(
@@ -2909,7 +3392,14 @@ def run(argv: Optional[List[str]] = None) -> int:
         statuses.extend(feed_statuses)
         if ai_events:
             events.extend(ai_events)
-            ai_updates = ai_events
+            ai_updates.extend(ai_events)
+
+    gemini_updates, gemini_statuses = _fetch_gemini_market_news(
+        datetime.now(timezone.utc), api_keys, logger
+    )
+    statuses.extend(gemini_statuses)
+    if gemini_updates:
+        ai_updates.extend(gemini_updates)
 
     arxiv_events, arxiv_status = _fetch_arxiv_events(arxiv_params, arxiv_throttle)
     statuses.append(arxiv_status)

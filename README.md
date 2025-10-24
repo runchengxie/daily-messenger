@@ -111,6 +111,7 @@ flowchart LR
 | BTC 主题 | Coinbase 现货、OKX 永续 funding 与基差、SoSoValue ETF 净流入 | 历史缓存、回退函数 `_simulate_btc_theme()` | `out/raw_market.json.btc` |
 | 情绪指标 | Cboe Put/Call CSV、AAII Sentiment | 使用上一期缓存写入 `state/sentiment_history.json` | `out/raw_market.json.sentiment`、`state/sentiment_history.json` |
 | 宏观与事件 | Trading Economics 日历、Finnhub 财报、AI 新闻 RSS、arXiv API | 人工模拟事件 `_simulate_events()`；缺口写入降级状态 | `out/raw_events.json.events`、`out/etl_status.json.sources` |
+| AI 市场资讯 | Google Gemini（`ai_news` 配置） | 多把 API key 自动轮换；未配置时跳过并记录说明 | `out/raw_events.json.ai_updates`（含 `market`、`summary`、`prompt_date` 等字段） |
 
 > 所有数据抓取均记录到 `out/etl_status.json`，有利于排障与降级判定。
 
@@ -152,7 +153,29 @@ repo/
 
     * 环境变量形式：`ALPHA_VANTAGE=...`、`TRADING_ECONOMICS_USER=...` 等
 
-    支持键：`alpha_vantage`、`twelve_data`、`financial_modeling_prep`、`trading_economics`、`finnhub`、`ai_feeds`、`arxiv`、`coinbase`、`okx`、`sosovalue`、`alpaca_key_id`、`alpaca_secret`。
+    支持键：`alpha_vantage`、`twelve_data`、`financial_modeling_prep`、`trading_economics`、`finnhub`、`ai_feeds`、`ai_news`、`arxiv`、`coinbase`、`okx`、`sosovalue`、`alpaca_key_id`、`alpaca_secret`。
+
+### Gemini 市场资讯（可选）
+
+* 18:00（北京时间）日报会串行调用 Gemini `generateContent`，分别汇总美股、日股、港股、A 股与黄金上一完整交易日的市场资讯。模型默认为 `gemini-2.0-pro-exp`，提示词内置合规提醒并要求输出放在 `<news>...</news>` 标签中。
+* 配置方式：在 `api_keys.json` 或 `API_KEYS` 内联 JSON 中新增 `ai_news` 段，例如：
+
+    ```json
+    {
+      "ai_news": {
+        "model": "gemini-2.0-pro-exp",
+        "enable_network": true,
+        "keys": [
+          "GEMINI_PRIMARY_KEY",
+          "GEMINI_BACKUP_KEY"
+        ]
+      }
+    }
+    ```
+
+    `keys` 数组支持多个凭证，流水线会遇到配额/错误时自动轮换。可选字段 `extra_prompt` 用于追加自定义提示语。
+
+* 生成结果写入 `out/raw_events.json.ai_updates`，Digest 阶段会展示该列表的前三条以供飞书卡片预览，并在 HTML 报告中展开全部条目。
 
 ### 浏览器链路与礼貌抓取变量
 

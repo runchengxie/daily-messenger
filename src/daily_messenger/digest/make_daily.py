@@ -14,6 +14,10 @@ from typing import Any, Dict, List, Mapping
 
 from daily_messenger.common import run_meta
 from daily_messenger.common.logging import log, setup_logger
+from daily_messenger.etl.run_fetch import (
+    AI_NEWS_MARKET_SPECS,
+    _extract_news_section,
+)
 
 from jinja2 import (
     ChoiceLoader,
@@ -38,6 +42,9 @@ SENTIMENT_LABELS = {
     "put_call": "Cboe 认沽/认购",
     "aaii": "AAII 多空差",
 }
+MARKET_LABELS = {spec.market: spec.label for spec in AI_NEWS_MARKET_SPECS}
+MARKET_ORDER = [spec.market for spec in AI_NEWS_MARKET_SPECS]
+NEWS_FALLBACK = "今日暂无五市市场资讯"
 
 
 @dataclass
@@ -239,6 +246,34 @@ def _build_summary_lines(
                 f"操作：{action['action']} {action['name']}（{action['reason']}）"
             )
     return lines[:12]
+
+
+def _build_market_news_text(ai_updates: List[Mapping[str, Any]]) -> str:
+    sections: List[str] = []
+    for market in MARKET_ORDER:
+        update = next(
+            (item for item in ai_updates if item.get("market") == market), None
+        )
+        if not update:
+            continue
+        label = MARKET_LABELS.get(market, str(market).upper())
+        date_candidate = update.get("prompt_date") or update.get("date")
+        heading = f"{label} · {date_candidate}" if date_candidate else label
+        summary_raw = update.get("summary")
+        summary_text = str(summary_raw) if isinstance(summary_raw, str) else ""
+        if not summary_text:
+            raw_text = update.get("raw_text")
+            if isinstance(raw_text, str) and raw_text.strip():
+                summary_text = _extract_news_section(raw_text)
+        if not summary_text:
+            continue
+        lines = [line.rstrip() for line in summary_text.splitlines() if line.strip()]
+        if not lines:
+            continue
+        sections.append("\n".join([heading] + lines))
+    if not sections:
+        return NEWS_FALLBACK + "\n"
+    return "\n\n".join(sections) + "\n"
 
 
 def _build_card_payload(
@@ -486,6 +521,9 @@ def run(argv: List[str] | None = None) -> int:
     if summary_text:
         summary_text += "\n"
     (OUT_DIR / "digest_summary.txt").write_text(summary_text, encoding="utf-8")
+
+    news_text = _build_market_news_text(ai_updates)
+    (OUT_DIR / "digest_news.txt").write_text(news_text, encoding="utf-8")
 
     repo = os.getenv("GITHUB_REPOSITORY", "org/repo")
     owner, repo_name = repo.split("/") if "/" in repo else ("org", repo)

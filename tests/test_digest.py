@@ -100,6 +100,9 @@ def test_run_generates_digest_outputs(
     summary_text = (tmp_path / "digest_summary.txt").read_text(encoding="utf-8")
     assert "AI 总分 82" in summary_text
 
+    news_text = (tmp_path / "digest_news.txt").read_text(encoding="utf-8")
+    assert digest.NEWS_FALLBACK in news_text
+
     card_payload = json.loads(
         (tmp_path / "digest_card.json").read_text(encoding="utf-8")
     )
@@ -213,3 +216,41 @@ def test_run_with_frozen_clock_renders_stable_timestamp(
     assert exit_code == 0
     html = (tmp_path / "index.html").read_text(encoding="utf-8")
     assert "2024-04-05 08:30 UTC" in html
+
+
+def test_run_writes_market_news_from_ai_updates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(digest, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(digest, "TEMPLATE_DIR", tmp_path / "templates")
+
+    scores_payload = {
+        "date": "2024-04-06",
+        "themes": [],
+        "events": [],
+        "ai_updates": [
+            {
+                "market": "us",
+                "prompt_date": "2024-04-05",
+                "summary": "- 美股要点 A\n- 美股要点 B",
+            },
+            {
+                "market": "cn",
+                "prompt_date": "2024-04-05",
+                "summary": "- A 股要点",
+            },
+        ],
+    }
+    actions_payload = {"items": []}
+
+    _write_json(tmp_path / "scores.json", scores_payload)
+    _write_json(tmp_path / "actions.json", actions_payload)
+
+    exit_code = digest.run([])
+
+    assert exit_code == 0
+    news_text = (tmp_path / "digest_news.txt").read_text(encoding="utf-8")
+    lines = [line for line in news_text.strip().splitlines() if line]
+    assert lines[0].startswith("美股 · 2024-04-05")
+    assert lines[1] == "- 美股要点 A"
+    assert "A 股要点" in news_text

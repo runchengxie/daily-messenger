@@ -158,6 +158,15 @@ jobs:
             --summary out/digest_summary.txt \
             --card out/digest_card.json
 
+      - name: Push Feishu market news text
+        if: ${{ always() && env.FEISHU_WEBHOOK_DAILY != '' }}
+        run: |
+          uv run python -m daily_messenger.tools.post_feishu \
+            --channel daily \
+            --mode post \
+            --summary out/digest_news.txt \
+            --title "盘前 · 五市要闻"
+
       - name: Mark failure when pipeline degraded
         if: ${{ steps.etl.outcome != 'success' || steps.scoring.outcome != 'success' }}
         run: exit 1

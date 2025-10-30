@@ -103,11 +103,20 @@ def test_run_generates_digest_outputs(
     news_text = (tmp_path / "digest_news.txt").read_text(encoding="utf-8")
     assert digest.NEWS_FALLBACK in news_text
 
+    html_report = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert "AI 市场资讯（GLM）" in html_report
+    assert digest.NEWS_FALLBACK in html_report
+
     card_payload = json.loads(
         (tmp_path / "digest_card.json").read_text(encoding="utf-8")
     )
+    action_element = next(
+        element
+        for element in card_payload["elements"]
+        if element.get("tag") == "action"
+    )
     assert (
-        card_payload["elements"][1]["actions"][0]["url"]
+        action_element["actions"][0]["url"]
         == "https://acme.github.io/daily-messenger/2024-04-01.html"
     )
 
@@ -254,3 +263,8 @@ def test_run_writes_market_news_from_ai_updates(
     assert lines[0].startswith("美股 · 2024-04-05")
     assert lines[1] == "- 美股要点 A"
     assert "A 股要点" in news_text
+
+    html_report = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert "AI 市场资讯（GLM）" in html_report
+    assert "美股 · 2024-04-05" in html_report
+    assert "A 股要点" in html_report

@@ -18,6 +18,13 @@
       }
     },
     {
+      "tag": "div",
+      "text": {
+        "tag": "lark_md",
+        "content": "**AI 市场资讯（GLM）**\n今日暂无五市市场资讯"
+      }
+    },
+    {
       "tag": "action",
       "actions": [
         {

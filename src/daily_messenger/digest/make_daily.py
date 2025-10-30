@@ -248,8 +248,10 @@ def _build_summary_lines(
     return lines[:12]
 
 
-def _build_market_news_text(ai_updates: List[Mapping[str, Any]]) -> str:
-    sections: List[str] = []
+def _build_market_news_sections(
+    ai_updates: List[Mapping[str, Any]]
+) -> List[Dict[str, Any]]:
+    sections: List[Dict[str, Any]] = []
     for market in MARKET_ORDER:
         update = next(
             (item for item in ai_updates if item.get("market") == market), None
@@ -258,7 +260,6 @@ def _build_market_news_text(ai_updates: List[Mapping[str, Any]]) -> str:
             continue
         label = MARKET_LABELS.get(market, str(market).upper())
         date_candidate = update.get("prompt_date") or update.get("date")
-        heading = f"{label} · {date_candidate}" if date_candidate else label
         summary_raw = update.get("summary")
         summary_text = str(summary_raw) if isinstance(summary_raw, str) else ""
         if not summary_text:
@@ -270,10 +271,43 @@ def _build_market_news_text(ai_updates: List[Mapping[str, Any]]) -> str:
         lines = [line.rstrip() for line in summary_text.splitlines() if line.strip()]
         if not lines:
             continue
-        sections.append("\n".join([heading] + lines))
+        sections.append(
+            {
+                "market": market,
+                "label": label,
+                "date": date_candidate,
+                "lines": lines,
+                "text": "\n".join(lines),
+                "source": update.get("source"),
+                "provider": update.get("provider"),
+                "model": update.get("model"),
+            }
+        )
+    return sections
+
+
+def _build_market_news_text(
+    ai_updates: List[Mapping[str, Any]],
+    sections: List[Dict[str, Any]] | None = None,
+) -> str:
+    if sections is None:
+        sections = _build_market_news_sections(ai_updates)
     if not sections:
         return NEWS_FALLBACK + "\n"
-    return "\n\n".join(sections) + "\n"
+    chunks: List[str] = []
+    for section in sections:
+        heading = (
+            f"{section['label']} · {section['date']}"
+            if section.get("date")
+            else section["label"]
+        )
+        chunks.append(heading)
+        chunks.extend(section["lines"])
+        chunks.append("")
+    text = "\n".join(chunks).strip()
+    if not text:
+        return NEWS_FALLBACK + "\n"
+    return text + "\n"
 
 
 def _build_card_payload(
@@ -283,6 +317,7 @@ def _build_card_payload(
     *,
     news_preview: List[str] | None = None,
     stock_preview: List[str] | None = None,
+    news_full_md: str | None = None,
 ) -> Dict[str, object]:
     content = "\n".join(lines)
     elements: List[Dict[str, object]] = [
@@ -302,6 +337,21 @@ def _build_card_payload(
             {
                 "tag": "div",
                 "text": {"tag": "lark_md", "content": "\n".join(preview_chunks)},
+            }
+        )
+
+    if news_full_md:
+        clip_length = 1000
+        body = news_full_md[:clip_length].rstrip()
+        if len(news_full_md) > clip_length:
+            body += "\n…"
+        elements.append(
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": f"**AI 市场资讯（GLM）**\n{body}",
+                },
             }
         )
 
@@ -486,6 +536,8 @@ def run(argv: List[str] | None = None) -> int:
                     stock_preview.append(preview_text)
 
     raw_links = {"market": "raw_market.json", "events": "raw_events.json"}
+    news_sections = _build_market_news_sections(ai_updates)
+    news_text = _build_market_news_text(ai_updates, news_sections)
 
     env = _build_env()
 
@@ -504,6 +556,8 @@ def run(argv: List[str] | None = None) -> int:
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "theme_details": theme_details,
         "ai_updates": ai_updates,
+        "news_sections": news_sections,
+        "news_text": news_text,
         "raw_links": raw_links,
     }
 
@@ -522,7 +576,6 @@ def run(argv: List[str] | None = None) -> int:
         summary_text += "\n"
     (OUT_DIR / "digest_summary.txt").write_text(summary_text, encoding="utf-8")
 
-    news_text = _build_market_news_text(ai_updates)
     (OUT_DIR / "digest_news.txt").write_text(news_text, encoding="utf-8")
 
     repo = os.getenv("GITHUB_REPOSITORY", "org/repo")
@@ -530,12 +583,25 @@ def run(argv: List[str] | None = None) -> int:
     report_url = f"https://{owner}.github.io/{repo_name}/{date_str}.html"
 
     card_title = f"内参 · 盘前{'（数据延迟）' if degraded else ''}"
+    news_lines: List[str] = []
+    for section in news_sections:
+        heading = (
+            f"{section['label']} · {section['date']}"
+            if section.get("date")
+            else section["label"]
+        )
+        news_lines.append(heading)
+        news_lines.extend(section["lines"])
+    if not news_lines and news_text:
+        news_lines = [line for line in news_text.splitlines() if line.strip()]
+    news_full_md = "\n".join(news_lines[:20]) if news_lines else ""
     card_payload = _build_card_payload(
         card_title,
         summary_lines or ["今日暂无摘要"],
         report_url,
         news_preview=news_preview,
         stock_preview=stock_preview,
+        news_full_md=news_full_md if news_full_md else None,
     )
     (OUT_DIR / "digest_card.json").write_text(
         json.dumps(card_payload, ensure_ascii=False, indent=2), encoding="utf-8"

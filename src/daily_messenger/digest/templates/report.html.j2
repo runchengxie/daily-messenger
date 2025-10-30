@@ -206,6 +206,21 @@
     </ul>
   </section>
   {% endif %}
+  {% if news_text %}
+  <section>
+    <h2>AI 市场资讯（GLM）</h2>
+    {% if news_sections %}
+      {% for section in news_sections %}
+        <article class="ai-market-section">
+          <h3>{{ section.label }}{% if section.date %} · {{ section.date }}{% endif %}</h3>
+          <pre style="white-space: pre-wrap; margin-top: .5rem;">{{ section.text }}</pre>
+        </article>
+      {% endfor %}
+    {% else %}
+      <p class="ai-market-empty">{{ news_text.strip() }}</p>
+    {% endif %}
+  </section>
+  {% endif %}
   <section>
     <h2>未来事件</h2>
     {% if events %}

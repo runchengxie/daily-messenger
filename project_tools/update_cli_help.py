@@ -13,7 +13,7 @@ from typing import Iterable, List, Sequence, Tuple
 
 MARKER_START = "<!-- cli-help:start -->"
 MARKER_END = "<!-- cli-help:end -->"
-CLI_SUBCOMMANDS: Tuple[str, ...] = ("run", "fetch", "score", "digest")
+CLI_SUBCOMMANDS: Tuple[str, ...] = ("run", "fetch", "score", "digest", "btc")
 
 
 def _collect_help(argv: Sequence[str]) -> str:

@@ -307,8 +307,7 @@ options:
   -h, --help            show this help message and exit
 
 $ dm run --help
-usage: dm run [-h] [--date DATE] [--force-fetch] [--force-score] [--degraded]
-              [--strict] [--disable-throttle]
+usage: dm run [-h] [--date DATE] [--force-fetch] [--force-score] [--degraded] [--strict] [--disable-throttle]
 
 options:
   -h, --help          show this help message and exit
@@ -344,6 +343,18 @@ options:
   -h, --help   show this help message and exit
   --date DATE  Override trading day (YYYY-MM-DD)
   --degraded   Render in degraded mode
+
+$ dm btc --help
+usage: dm btc [-h] {init-history,fetch,report} ...
+
+positional arguments:
+  {init-history,fetch,report}
+    init-history        一次性下载 Binance 日度压缩包并合并为 Parquet
+    fetch               增量刷新 Binance/Kraken/Bitstamp K 线并写入 Parquet
+    report              生成 BTC Markdown 日报
+
+options:
+  -h, --help            show this help message and exit
 ```
 <!-- cli-help:end -->
 

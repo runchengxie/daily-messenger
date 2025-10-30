@@ -299,7 +299,8 @@ options:
   -h, --help            show this help message and exit
 
 $ dm run --help
-usage: dm run [-h] [--date DATE] [--force-fetch] [--force-score] [--degraded] [--strict] [--disable-throttle]
+usage: dm run [-h] [--date DATE] [--force-fetch] [--force-score] [--degraded]
+              [--strict] [--disable-throttle]
 
 options:
   -h, --help          show this help message and exit

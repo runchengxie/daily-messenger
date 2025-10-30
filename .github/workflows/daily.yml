@@ -25,7 +25,7 @@ jobs:
       FEISHU_SECRET_DAILY: ${{ secrets.FEISHU_SECRET_DAILY }}
       FEISHU_WEBHOOK_ALERTS: ${{ secrets.FEISHU_WEBHOOK_ALERTS }}
       FEISHU_SECRET_ALERTS: ${{ secrets.FEISHU_SECRET_ALERTS }}
-      EDGAR_USER_AGENT: "daily-messenger/1.0 (mailto:xieruncheng@gmail.com)"
+      EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

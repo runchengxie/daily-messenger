@@ -8,12 +8,21 @@
     "alpaca_key_id": "YOUR_KEY_ID",
     "alpaca_secret": "YOUR_SECRET",
     "ai_news": {
-        "model": "gemini-2.5-pro",
+        "provider": "glm",
+        "model": "glm-4.6",
         "enable_network": true,
+        "thinking": "enabled",
         "keys": [
-            "GEMINI_PRIMARY_KEY",
-            "GEMINI_BACKUP_KEY",
-            "GEMINI_RESERVE_KEY"
+            {
+                "label": "glm_primary",
+                "value": "GLM_PRIMARY_KEY",
+                "provider": "glm"
+            },
+            {
+                "label": "glm_backup",
+                "value": "GLM_BACKUP_KEY",
+                "provider": "glm"
+            }
         ],
         "extra_prompt": "可选：补充提醒，如优先关注中概股或政策面。"
     }

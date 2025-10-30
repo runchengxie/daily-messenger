@@ -111,7 +111,7 @@ flowchart LR
 | BTC 主题 | Coinbase 现货、OKX 永续 funding 与基差、SoSoValue ETF 净流入 | 历史缓存、回退函数 `_simulate_btc_theme()` | `out/raw_market.json.btc` |
 | 情绪指标 | Cboe Put/Call CSV、AAII Sentiment | 使用上一期缓存写入 `state/sentiment_history.json` | `out/raw_market.json.sentiment`、`state/sentiment_history.json` |
 | 宏观与事件 | Trading Economics 日历、Finnhub 财报、AI 新闻 RSS、arXiv API | 人工模拟事件 `_simulate_events()`；缺口写入降级状态 | `out/raw_events.json.events`、`out/etl_status.json.sources` |
-| AI 市场资讯 | Google Gemini（`ai_news` 配置） | 多把 API key 自动轮换；未配置时跳过并记录说明 | `out/raw_events.json.ai_updates`（含 `market`、`summary`、`prompt_date` 等字段） |
+| AI 市场资讯 | 智谱 GLM-4.6（`ai_news.provider=glm`，默认）；Google Gemini（`provider=gemini`，可选） | 多把 API key 自动轮换；未配置时跳过并记录说明 | `out/raw_events.json.ai_updates`（含 `market`、`summary`、`prompt_date` 等字段） |
 
 > 所有数据抓取均记录到 `out/etl_status.json`，有利于排障与降级判定。
 
@@ -155,40 +155,32 @@ repo/
 
     支持键：`alpha_vantage`、`twelve_data`、`financial_modeling_prep`、`trading_economics`、`finnhub`、`ai_feeds`、`ai_news`、`arxiv`、`coinbase`、`okx`、`sosovalue`、`alpaca_key_id`、`alpaca_secret`。
 
-### Gemini 市场资讯（可选）
+### AI 市场资讯（GLM 默认，Gemini 可选）
 
-* 18:00（北京时间）日报会串行调用 Gemini `generateContent`，分别汇总美股、日股、港股、A 股与黄金上一完整交易日的市场资讯。模型默认为 `gemini-2.5-pro`，提示词内置合规提醒并要求输出放在 `<news>...</news>` 标签中。
-* 配置方式：在 `api_keys.json` 或 `API_KEYS` 内联 JSON 中新增 `ai_news` 段，例如：
+* 18:00（北京时间）日报会串行调用 AI 摘要引擎，为美股、日股、港股、A 股与黄金生成 `<news>...</news>` 包裹的 Markdown 要点。`ai_news.provider` 缺省为智谱 GLM-4.6，可联动 [深度思考](docs/thinking.md) 与 [联网搜索](docs/web-search.md)。
+* **GLM 配置（默认）**：在 `api_keys.json` 或 `API_KEYS` 内联 JSON 中添加：
 
     ```json
     {
       "ai_news": {
-        "model": "gemini-2.5-pro",
+        "provider": "glm",
+        "model": "glm-4.6",
         "enable_network": true,
+        "thinking": "enabled",
         "keys": [
-          "GEMINI_PRIMARY_KEY",
-          "GEMINI_BACKUP_KEY",
-          "GEMINI_RESERVE_KEY"
-        ]
+          {"label": "glm_primary", "value": "GLM_PRIMARY_KEY"},
+          {"label": "glm_backup", "value": "GLM_BACKUP_KEY"}
+        ],
+        "extra_prompt": "可选提示：例如强调关注政策面或中特估。"
       }
     }
     ```
 
-    `keys` 数组支持多个凭证（建议至少三把，以便阶梯降配额），流水线会遇到配额/错误时自动轮换。可选字段 `extra_prompt` 用于追加自定义提示语。
+    核心字段与 `.env.example` 中的 `GLM_*` 环境变量一一对应：`GLM_MODEL`、`GLM_ENABLE_NETWORK`、`GLM_THINKING`、`GLM_KEY_{N}` 会自动合并到上述配置；`AI_NEWS_MODEL` 和 `AI_NEWS_EXTRA_PROMPT` 可做全局覆盖。更多能力介绍参见 [`docs/glm-4.6.md`](docs/glm-4.6.md)。
 
-    若云端环境难以挂载 JSON，可改用环境变量（示例参见 `.env.example`）：
+* **Gemini 切换（可选）**：若需使用 Google Gemini，请显式设置 `ai_news.provider` 为 `gemini` 或在环境变量中声明 `AI_NEWS_PROVIDER=gemini`，并提供等效的 `keys` / `GEMINI_KEY_{N}`。其它字段与旧版保持一致（默认模型 `gemini-2.5-pro`，`GEMINI_ENABLE_NETWORK` 控制 Google Search Retrieval）。
 
-    ```dotenv
-    GEMINI_MODEL=gemini-2.5-pro
-    GEMINI_ENABLE_NETWORK=1
-    GEMINI_KEY_1=your_gemini_key_1
-    GEMINI_API_KEY_2=your_gemini_key_2
-    GEMINI_RESERVE_KEY=your_gemini_key_3
-    ```
-
-    配置解析器会自动把这些环境变量与 `ai_news` 段合并，优先级为文件/内联 JSON → 环境变量。
-
-* 生成结果写入 `out/raw_events.json.ai_updates`，Digest 阶段会展示该列表的前三条以供飞书卡片预览，并在 HTML 报告中展开全部条目。
+* 生成结果写入 `out/raw_events.json.ai_updates`，Digest 阶段会展示前三条以供飞书卡片预览，并在 HTML 报告中展开全部条目。
 
 ### 浏览器链路与礼貌抓取变量
 

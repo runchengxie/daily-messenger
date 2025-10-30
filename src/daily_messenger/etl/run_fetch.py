@@ -107,17 +107,38 @@ class _MarketNewsSpec:
     scope: str
 
 
+AI_NEWS_PROVIDER_GLM = "glm"
+AI_NEWS_PROVIDER_GEMINI = "gemini"
+DEFAULT_AI_NEWS_PROVIDER = AI_NEWS_PROVIDER_GLM
+
+DEFAULT_GLM_MODEL = "glm-4.6"
+DEFAULT_GLM_TIMEOUT = 60.0
+DEFAULT_GLM_ENABLE_NETWORK = True
+DEFAULT_GLM_THINKING = "enabled"
+
 @dataclass
-class _GeminiSettings:
+class _AiNewsSettings:
+    provider: str
     model: str
     keys: List[Tuple[str, str]]
     enable_network: bool
     timeout: float
     extra_instructions: str = ""
+    thinking: Optional[str] = None
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
 DEFAULT_GEMINI_TIMEOUT = 45.0
 DEFAULT_GEMINI_ENABLE_NETWORK = True
+AI_NEWS_PROVIDER_META = {
+    AI_NEWS_PROVIDER_GLM: {"source": "glm", "provider": "zhipu_glm"},
+    AI_NEWS_PROVIDER_GEMINI: {"source": "gemini", "provider": "google_gemini"},
+}
+GLM_CHAT_COMPLETIONS_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+GLM_MAX_RETRIES = 3
+GLM_BACKOFF_START = 0.8
+GLM_BACKOFF_FACTOR = 2.0
+GLM_BACKOFF_JITTER = 0.35
+
 NEWS_TAG_PATTERN = re.compile(r"<news>(.*?)</news>", re.IGNORECASE | re.DOTALL)
 GEMINI_MAX_RETRIES = 3
 GEMINI_BACKOFF_START = 0.8
@@ -125,7 +146,7 @@ GEMINI_BACKOFF_FACTOR = 2.0
 GEMINI_BACKOFF_JITTER = 0.35
 GEMINI_INTER_MARKET_DELAY_RANGE = (0.8, 1.6)
 
-GEMINI_MARKET_SPECS: Tuple[_MarketNewsSpec, ...] = (
+AI_NEWS_MARKET_SPECS: Tuple[_MarketNewsSpec, ...] = (
     _MarketNewsSpec(
         market="us",
         label="美股",
@@ -356,7 +377,7 @@ def _load_api_keys(logger: logging.Logger | None) -> Dict[str, str]:
         if te_user and te_password:
             data["trading_economics"] = f"{te_user}:{te_password}"
 
-    _merge_gemini_env_config(data, env)
+    _merge_ai_news_env_config(data, env)
 
     try:
         normalized = _normalize_api_keys(data)
@@ -417,7 +438,7 @@ def _resolve_arxiv_config(config: Dict[str, Any]) -> Tuple[Dict[str, Any], float
     return request_params, throttle
 
 
-def _merge_gemini_env_config(data: Dict[str, Any], env: Mapping[str, str]) -> None:
+def _merge_ai_news_env_config(data: Dict[str, Any], env: Mapping[str, str]) -> None:
     existing_section = data.get("ai_news")
     if isinstance(existing_section, dict):
         section: Dict[str, Any] = dict(existing_section)
@@ -430,36 +451,63 @@ def _merge_gemini_env_config(data: Dict[str, Any], env: Mapping[str, str]) -> No
         stripped = value.strip()
         return stripped or None
 
-    env_candidates: List[Tuple[str, str]] = []
+    env_candidates: List[Tuple[str, str, str]] = []
 
-    def _add_candidate(raw: Optional[str], label: str) -> None:
+    def _add_candidate(raw: Optional[str], label: str, provider: str) -> None:
         token = _coerce_str(raw if isinstance(raw, str) else None)
         if token:
-            env_candidates.append((label, token))
+            env_candidates.append((provider, label, token))
 
-    # Single-key fallbacks
-    _add_candidate(env.get("GEMINI_API_KEY"), "env_primary")
-    _add_candidate(env.get("GEMINI_KEY"), "env_primary")
-    _add_candidate(env.get("GOOGLE_GEMINI_API_KEY"), "env_primary")
-
-    # CSV-style list
+    # Gemini fallbacks
+    _add_candidate(env.get("GEMINI_API_KEY"), "env_primary", AI_NEWS_PROVIDER_GEMINI)
+    _add_candidate(env.get("GEMINI_KEY"), "env_primary", AI_NEWS_PROVIDER_GEMINI)
+    _add_candidate(
+        env.get("GOOGLE_GEMINI_API_KEY"), "env_primary", AI_NEWS_PROVIDER_GEMINI
+    )
     csv_payload = env.get("GEMINI_API_KEYS") or env.get("GEMINI_KEYS")
     if csv_payload:
         for idx, segment in enumerate(csv_payload.split(","), start=1):
-            _add_candidate(segment, f"env_{idx}")
-
-    # Enumerated keys
+            _add_candidate(segment, f"env_{idx}", AI_NEWS_PROVIDER_GEMINI)
     for idx in range(1, 11):
-        _add_candidate(env.get(f"GEMINI_API_KEY_{idx}"), f"env_{idx}")
-        _add_candidate(env.get(f"GEMINI_KEY_{idx}"), f"env_{idx}")
-
-    # Named helpers
+        _add_candidate(
+            env.get(f"GEMINI_API_KEY_{idx}"), f"env_{idx}", AI_NEWS_PROVIDER_GEMINI
+        )
+        _add_candidate(
+            env.get(f"GEMINI_KEY_{idx}"), f"env_{idx}", AI_NEWS_PROVIDER_GEMINI
+        )
     for var, label in (
         ("GEMINI_PRIMARY_KEY", "primary"),
         ("GEMINI_BACKUP_KEY", "backup"),
         ("GEMINI_RESERVE_KEY", "reserve"),
     ):
-        _add_candidate(env.get(var), label)
+        _add_candidate(env.get(var), label, AI_NEWS_PROVIDER_GEMINI)
+
+    # GLM / Zhipu fallbacks
+    _add_candidate(env.get("GLM_API_KEY"), "env_primary", AI_NEWS_PROVIDER_GLM)
+    _add_candidate(env.get("GLM_KEY"), "env_primary", AI_NEWS_PROVIDER_GLM)
+    _add_candidate(env.get("ZHIPUAI_API_KEY"), "env_primary", AI_NEWS_PROVIDER_GLM)
+    _add_candidate(env.get("ZHIPU_API_KEY"), "env_primary", AI_NEWS_PROVIDER_GLM)
+    _add_candidate(env.get("ZAI_API_KEY"), "env_primary", AI_NEWS_PROVIDER_GLM)
+    glm_csv = (
+        env.get("GLM_API_KEYS")
+        or env.get("GLM_KEYS")
+        or env.get("ZHIPU_API_KEYS")
+        or env.get("ZHIPUAI_KEYS")
+    )
+    if glm_csv:
+        for idx, segment in enumerate(glm_csv.split(","), start=1):
+            _add_candidate(segment, f"env_{idx}", AI_NEWS_PROVIDER_GLM)
+    for idx in range(1, 11):
+        _add_candidate(
+            env.get(f"GLM_API_KEY_{idx}"), f"env_{idx}", AI_NEWS_PROVIDER_GLM
+        )
+        _add_candidate(env.get(f"GLM_KEY_{idx}"), f"env_{idx}", AI_NEWS_PROVIDER_GLM)
+        _add_candidate(
+            env.get(f"ZHIPUAI_API_KEY_{idx}"), f"env_{idx}", AI_NEWS_PROVIDER_GLM
+        )
+        _add_candidate(
+            env.get(f"ZHIPU_API_KEY_{idx}"), f"env_{idx}", AI_NEWS_PROVIDER_GLM
+        )
 
     if env_candidates:
         existing_keys_raw = section.get("keys")
@@ -467,40 +515,119 @@ def _merge_gemini_env_config(data: Dict[str, Any], env: Mapping[str, str]) -> No
         if isinstance(existing_keys_raw, list):
             combined.extend(existing_keys_raw)
 
-        def _extract_token(entry: Any) -> Optional[str]:
+        def _extract(entry: Any) -> Tuple[Optional[str], Optional[str]]:
             if isinstance(entry, str):
-                return _coerce_str(entry)
+                return _coerce_str(entry), section.get("provider")
             if isinstance(entry, Mapping):
                 value = entry.get("value") or entry.get("key") or entry.get("api_key")
+                provider = entry.get("provider") or entry.get("vendor")
                 if isinstance(value, str):
-                    return _coerce_str(value)
-            return None
+                    return _coerce_str(value), (
+                        str(provider).strip().lower() if isinstance(provider, str) else None
+                    )
+            return None, None
 
-        seen_tokens = {token for token in (_extract_token(item) for item in combined) if token}
-        for label, token in env_candidates:
+        seen_pairs: set[Tuple[str, str]] = set()
+        seen_tokens: set[str] = set()
+        default_provider = None
+        provider_hint = section.get("provider")
+        if isinstance(provider_hint, str) and provider_hint.strip():
+            default_provider = provider_hint.strip().lower()
+        for item in combined:
+            token, provider_override = _extract(item)
+            if not token:
+                continue
+            provider_value = (
+                provider_override
+                if provider_override
+                else default_provider
+                if default_provider
+                else ""
+            )
+            seen_pairs.add((provider_value, token))
+            seen_tokens.add(token)
+
+        for provider, label, token in env_candidates:
             if token in seen_tokens:
                 continue
-            combined.append({"value": token, "label": label})
+            key = (provider, token)
+            if key in seen_pairs:
+                continue
+            combined.append({"value": token, "label": label, "provider": provider})
+            seen_pairs.add(key)
             seen_tokens.add(token)
         section["keys"] = combined
 
-    model_env = _coerce_str(env.get("GEMINI_MODEL") or env.get("GEMINI_DEFAULT_MODEL"))
-    if model_env:
-        section["model"] = model_env
+    provider_env = _coerce_str(env.get("AI_NEWS_PROVIDER"))
+    if provider_env:
+        section["provider"] = provider_env.lower()
 
-    enable_env = env.get("GEMINI_ENABLE_NETWORK") or env.get("GEMINI_GOOGLE_SEARCH")
-    if enable_env is not None:
-        section["enable_network"] = _env_truthy(str(enable_env))
+    model_general = _coerce_str(env.get("AI_NEWS_MODEL"))
+    if model_general:
+        section["model"] = model_general
 
-    extra_prompt_env = _coerce_str(env.get("GEMINI_EXTRA_PROMPT"))
+    glm_model_env = (
+        _coerce_str(env.get("GLM_MODEL"))
+        or _coerce_str(env.get("ZHIPU_MODEL"))
+        or _coerce_str(env.get("ZHIPUAI_MODEL"))
+    )
+    if glm_model_env:
+        section["glm_model"] = glm_model_env
+
+    gemini_model_env = _coerce_str(env.get("GEMINI_MODEL")) or _coerce_str(
+        env.get("GEMINI_DEFAULT_MODEL")
+    )
+    if gemini_model_env:
+        section["gemini_model"] = gemini_model_env
+
+    enable_general = env.get("AI_NEWS_ENABLE_NETWORK")
+    if enable_general is not None:
+        section["enable_network"] = _env_truthy(str(enable_general))
+
+    glm_enable_env = env.get("GLM_ENABLE_NETWORK") or env.get(
+        "ZHIPU_ENABLE_NETWORK"
+    )
+    if glm_enable_env is not None:
+        section["glm_enable_network"] = _env_truthy(str(glm_enable_env))
+
+    gemini_enable_env = env.get("GEMINI_ENABLE_NETWORK") or env.get(
+        "GEMINI_GOOGLE_SEARCH"
+    )
+    if gemini_enable_env is not None:
+        section["gemini_enable_network"] = _env_truthy(str(gemini_enable_env))
+
+    extra_prompt_env = _coerce_str(env.get("AI_NEWS_EXTRA_PROMPT"))
     if extra_prompt_env:
         section["extra_prompt"] = extra_prompt_env
+
+    glm_prompt_env = _coerce_str(env.get("GLM_EXTRA_PROMPT"))
+    if glm_prompt_env:
+        section["glm_extra_prompt"] = glm_prompt_env
+
+    gemini_prompt_env = _coerce_str(env.get("GEMINI_EXTRA_PROMPT"))
+    if gemini_prompt_env:
+        section["gemini_extra_prompt"] = gemini_prompt_env
+
+    thinking_env = _coerce_str(env.get("AI_NEWS_THINKING"))
+    if thinking_env:
+        section["thinking"] = thinking_env
+
+    glm_thinking_env = _coerce_str(env.get("GLM_THINKING"))
+    if glm_thinking_env:
+        section["glm_thinking"] = glm_thinking_env
+
+    timeout_env = _coerce_str(env.get("AI_NEWS_TIMEOUT"))
+    if timeout_env:
+        try:
+            section["timeout"] = float(timeout_env)
+        except ValueError:
+            pass
 
     if section:
         data["ai_news"] = section
 
 
-def _collect_gemini_keys(config: Dict[str, Any]) -> List[Tuple[str, str]]:
+def _collect_ai_news_keys(config: Dict[str, Any], provider: str) -> List[Tuple[str, str]]:
     keys: List[Tuple[str, str]] = []
     seen: set[str] = set()
 
@@ -516,12 +643,23 @@ def _collect_gemini_keys(config: Dict[str, Any]) -> List[Tuple[str, str]]:
     raw_keys = config.get("keys")
     if isinstance(raw_keys, list):
         for idx, entry in enumerate(raw_keys, start=1):
+            entry_provider = provider
+            label = f"key_{idx}"
+            token: Any = None
             if isinstance(entry, str):
-                _push(entry, f"key_{idx}")
-            elif isinstance(entry, dict):
+                token = entry
+            elif isinstance(entry, Mapping):
+                entry_provider = str(entry.get("provider") or entry.get("vendor") or provider)
                 token = entry.get("value") or entry.get("key") or entry.get("api_key")
                 label = str(entry.get("label") or entry.get("name") or f"key_{idx}")
-                _push(token, label)
+            else:
+                continue
+            if entry_provider and str(entry_provider).strip().lower() not in {
+                provider,
+                "",
+            }:
+                continue
+            _push(token, label)
     else:
         single_candidate = (
             config.get("key")
@@ -537,13 +675,27 @@ def _collect_gemini_keys(config: Dict[str, Any]) -> List[Tuple[str, str]]:
         if not isinstance(field, str):
             continue
         lowered = field.lower()
-        if lowered.startswith("gemini") and lowered not in {"gemini_model"}:
-            _push(value, field)
+        relevant_prefixes = (
+            ("gemini", "google_gemini")
+            if provider == AI_NEWS_PROVIDER_GEMINI
+            else ("glm", "zhipu", "zhipuai", "zai", "bigmodel")
+        )
+        if not any(lowered.startswith(prefix) for prefix in relevant_prefixes):
+            continue
+        if lowered.endswith("_model") or lowered.endswith("model"):
+            continue
+        if lowered.endswith("enable_network"):
+            continue
+        if lowered.endswith("extra_prompt"):
+            continue
+        if lowered.endswith("thinking"):
+            continue
+        _push(value, field)
 
     return keys
 
 
-def _resolve_gemini_settings(api_keys: Dict[str, Any]) -> Optional[_GeminiSettings]:
+def _resolve_ai_news_settings(api_keys: Dict[str, Any]) -> Optional[_AiNewsSettings]:
     section = api_keys.get("ai_news")
     if isinstance(section, str):
         # Attempt to parse JSON if provided as a string
@@ -552,53 +704,200 @@ def _resolve_gemini_settings(api_keys: Dict[str, Any]) -> Optional[_GeminiSettin
         except json.JSONDecodeError:
             section = None
 
-    if not isinstance(section, dict):
-        # Fallback: gather top-level keys with gemini prefix
+    def _normalize_provider(candidate: Any) -> Optional[str]:
+        if not isinstance(candidate, str):
+            return None
+        lowered = candidate.strip().lower()
+        if not lowered:
+            return None
+        if lowered in {
+            AI_NEWS_PROVIDER_GLM,
+            "zhipu",
+            "zhipuai",
+            "glm4",
+            "glm-4.6",
+            "glm4.6",
+            "bigmodel",
+        }:
+            return AI_NEWS_PROVIDER_GLM
+        if lowered in {
+            AI_NEWS_PROVIDER_GEMINI,
+            "google",
+            "google_gemini",
+            "gemini-pro",
+            "gemini-pro-vision",
+            "gemini-2.5-pro",
+        }:
+            return AI_NEWS_PROVIDER_GEMINI
+        return None
+
+    def _infer_provider_from_model(model_value: Any) -> Optional[str]:
+        if not isinstance(model_value, str):
+            return None
+        lowered = model_value.strip().lower()
+        if not lowered:
+            return None
+        if "gemini" in lowered:
+            return AI_NEWS_PROVIDER_GEMINI
+        if "glm" in lowered or "zhipu" in lowered:
+            return AI_NEWS_PROVIDER_GLM
+        return None
+
+    def _collect_top_level_keys(provider: str) -> List[Tuple[str, str]]:
         raw_keys: List[Tuple[str, str]] = []
+        prefixes = (
+            ("gemini", "google_gemini")
+            if provider == AI_NEWS_PROVIDER_GEMINI
+            else ("glm", "zhipu", "zhipuai", "zai", "bigmodel")
+        )
         for field, value in api_keys.items():
-            if not isinstance(field, str):
+            if not isinstance(field, str) or not isinstance(value, str):
                 continue
             lowered = field.lower()
-            if lowered.startswith("gemini"):
-                if isinstance(value, str):
-                    token = value.strip()
-                    if token:
-                        raw_keys.append((field, token))
-        if not raw_keys:
+            if any(lowered.startswith(prefix) for prefix in prefixes):
+                token = value.strip()
+                if token:
+                    raw_keys.append((field, token))
+        return raw_keys
+
+    def _choose_provider(section_dict: Optional[Dict[str, Any]]) -> str:
+        if isinstance(section_dict, dict):
+            provider = _normalize_provider(section_dict.get("provider"))
+            if provider:
+                return provider
+
+            model_candidate = (
+                section_dict.get("model")
+                or section_dict.get("default_model")
+                or section_dict.get("ai_model")
+            )
+            provider = _infer_provider_from_model(model_candidate)
+            if provider:
+                return provider
+
+            keys_section = section_dict.get("keys")
+            if isinstance(keys_section, list):
+                for entry in keys_section:
+                    if isinstance(entry, Mapping):
+                        provider = _normalize_provider(
+                            entry.get("provider") or entry.get("vendor")
+                        )
+                        if provider:
+                            return provider
+
+            if any(
+                key in section_dict
+                for key in ("gemini_model", "gemini_enable_network", "google_search")
+            ):
+                return AI_NEWS_PROVIDER_GEMINI
+            if any(
+                key in section_dict
+                for key in ("glm_model", "glm_enable_network", "glm_thinking")
+            ):
+                return AI_NEWS_PROVIDER_GLM
+
+        top_level_inferred = None
+        raw_keys_gemini = _collect_top_level_keys(AI_NEWS_PROVIDER_GEMINI)
+        raw_keys_glm = _collect_top_level_keys(AI_NEWS_PROVIDER_GLM)
+        if raw_keys_gemini and not raw_keys_glm:
+            top_level_inferred = AI_NEWS_PROVIDER_GEMINI
+        elif raw_keys_glm and not raw_keys_gemini:
+            top_level_inferred = AI_NEWS_PROVIDER_GLM
+        elif raw_keys_gemini and raw_keys_glm:
+            # Both present; prefer explicit default to avoid surprises
+            top_level_inferred = DEFAULT_AI_NEWS_PROVIDER
+
+        return top_level_inferred or DEFAULT_AI_NEWS_PROVIDER
+
+    if not isinstance(section, dict):
+        provider = _choose_provider(None)
+        keys = _collect_top_level_keys(provider)
+        if not keys:
             return None
-        return _GeminiSettings(
+        if provider == AI_NEWS_PROVIDER_GLM:
+            return _AiNewsSettings(
+                provider=provider,
+                model=DEFAULT_GLM_MODEL,
+                keys=keys,
+                enable_network=DEFAULT_GLM_ENABLE_NETWORK,
+                timeout=DEFAULT_GLM_TIMEOUT,
+                extra_instructions="",
+                thinking=DEFAULT_GLM_THINKING,
+            )
+        return _AiNewsSettings(
+            provider=provider,
             model=DEFAULT_GEMINI_MODEL,
-            keys=raw_keys,
+            keys=keys,
             enable_network=DEFAULT_GEMINI_ENABLE_NETWORK,
             timeout=DEFAULT_GEMINI_TIMEOUT,
+            extra_instructions="",
         )
 
-    model_candidate = section.get("model") or section.get("gemini_model")
-    model = (
-        str(model_candidate).strip()
-        if isinstance(model_candidate, str) and model_candidate.strip()
-        else DEFAULT_GEMINI_MODEL
-    )
+    provider = _choose_provider(section)
 
-    enable_network_candidate = section.get("enable_network")
-    if enable_network_candidate is None:
-        enable_network_candidate = section.get("google_search")
-    enable_network = (
-        bool(enable_network_candidate)
-        if isinstance(enable_network_candidate, bool)
-        else _env_truthy(str(enable_network_candidate))
-        if isinstance(enable_network_candidate, str)
-        else DEFAULT_GEMINI_ENABLE_NETWORK
+    provider_specific_model_field = (
+        "glm_model" if provider == AI_NEWS_PROVIDER_GLM else "gemini_model"
     )
+    model_candidate = (
+        section.get(provider_specific_model_field)
+        or section.get("model")
+        or section.get("default_model")
+    )
+    if isinstance(model_candidate, str) and model_candidate.strip():
+        model = model_candidate.strip()
+    else:
+        model = (
+            DEFAULT_GLM_MODEL
+            if provider == AI_NEWS_PROVIDER_GLM
+            else DEFAULT_GEMINI_MODEL
+        )
 
-    timeout_candidate = section.get("timeout_seconds") or section.get("timeout")
+    enable_field = section.get(f"{provider}_enable_network")
+    if enable_field is None:
+        enable_field = section.get("enable_network")
+    if enable_field is None and provider == AI_NEWS_PROVIDER_GEMINI:
+        enable_field = section.get("google_search")
+
+    if isinstance(enable_field, bool):
+        enable_network = enable_field
+    elif isinstance(enable_field, (int, float)):
+        enable_network = bool(enable_field)
+    elif isinstance(enable_field, str):
+        enable_network = _env_truthy(enable_field)
+    else:
+        enable_network = (
+            DEFAULT_GLM_ENABLE_NETWORK
+            if provider == AI_NEWS_PROVIDER_GLM
+            else DEFAULT_GEMINI_ENABLE_NETWORK
+        )
+
+    timeout_candidate = (
+        section.get("timeout_seconds")
+        or section.get("timeout")
+        or section.get(f"{provider}_timeout")
+    )
     if isinstance(timeout_candidate, (int, float)) and timeout_candidate > 0:
         timeout = float(timeout_candidate)
+    elif isinstance(timeout_candidate, str):
+        try:
+            timeout = float(timeout_candidate)
+        except ValueError:
+            timeout = (
+                DEFAULT_GLM_TIMEOUT
+                if provider == AI_NEWS_PROVIDER_GLM
+                else DEFAULT_GEMINI_TIMEOUT
+            )
     else:
-        timeout = DEFAULT_GEMINI_TIMEOUT
+        timeout = (
+            DEFAULT_GLM_TIMEOUT
+            if provider == AI_NEWS_PROVIDER_GLM
+            else DEFAULT_GEMINI_TIMEOUT
+        )
 
-    extra_prompt_candidate = section.get("extra_prompt") or section.get(
-        "extra_instructions"
+    extra_prompt_candidate = (
+        section.get(f"{provider}_extra_prompt")
+        or section.get("extra_prompt")
+        or section.get("extra_instructions")
     )
     extra_instructions = (
         str(extra_prompt_candidate).strip()
@@ -606,29 +905,44 @@ def _resolve_gemini_settings(api_keys: Dict[str, Any]) -> Optional[_GeminiSettin
         else ""
     )
 
-    keys = _collect_gemini_keys(section)
-    if not keys:
-        # Permit fallback to top-level entries if nested keys missing
-        for field, value in api_keys.items():
-            if not isinstance(field, str):
-                continue
-            lowered = field.lower()
-            if lowered.startswith("gemini"):
-                if isinstance(value, str):
-                    token = value.strip()
-                    if token:
-                        keys.append((field, token))
-    if not keys:
-        return None
+    thinking_candidate = (
+        section.get("thinking")
+        if provider == AI_NEWS_PROVIDER_GLM
+        else None
+    )
+    if provider == AI_NEWS_PROVIDER_GLM and not thinking_candidate:
+        thinking_candidate = section.get("glm_thinking")
+    thinking: Optional[str]
+    if isinstance(thinking_candidate, str) and thinking_candidate.strip():
+        thinking = thinking_candidate.strip().lower()
+    elif provider == AI_NEWS_PROVIDER_GLM:
+        thinking = DEFAULT_GLM_THINKING
+    else:
+        thinking = None
 
-    return _GeminiSettings(
+    keys = _collect_ai_news_keys(section, provider)
+    if not keys:
+        keys = _collect_top_level_keys(provider)
+    if not keys:
+        return _AiNewsSettings(
+            provider=provider,
+            model=model,
+            keys=[],
+            enable_network=enable_network,
+            timeout=timeout,
+            extra_instructions=extra_instructions,
+            thinking=thinking,
+        )
+
+    return _AiNewsSettings(
+        provider=provider,
         model=model,
         keys=keys,
         enable_network=enable_network,
         timeout=timeout,
         extra_instructions=extra_instructions,
+        thinking=thinking,
     )
-
 
 def _call_gemini_generate_content(
     model: str,
@@ -684,6 +998,65 @@ def _call_gemini_generate_content(
     return cast(Dict[str, Any], payload)
 
 
+def _call_glm_chat_completions(
+    model: str,
+    api_key: str,
+    prompt: str,
+    enable_network: bool,
+    timeout: float,
+    thinking: Optional[str],
+) -> Dict[str, Any]:
+    body: Dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+    }
+    if thinking:
+        body["thinking"] = {"type": thinking}
+    if enable_network:
+        body["tools"] = [
+            {
+                "type": "web_search",
+                "web_search": {
+                    "enable": True,
+                    "search_result": True,
+                },
+            }
+        ]
+        body["tool_choice"] = "auto"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "User-Agent": USER_AGENT,
+    }
+    per_request_timeout = max(timeout, 5.0)
+    hard_deadline = max(per_request_timeout * 2.5, per_request_timeout + 10.0)
+    policy = RetryPolicy(
+        retries=GLM_MAX_RETRIES,
+        backoff_start=GLM_BACKOFF_START,
+        backoff_factor=GLM_BACKOFF_FACTOR,
+        jitter=GLM_BACKOFF_JITTER,
+        max_sleep=8.0,
+        per_request_timeout=per_request_timeout,
+        hard_deadline=hard_deadline,
+    )
+    payload = _request_json(
+        GLM_CHAT_COMPLETIONS_URL,
+        method="POST",
+        json_body=body,
+        headers=headers,
+        policy=policy,
+    )
+    if not isinstance(payload, dict):
+        raise ValueError("GLM 响应不是 JSON 对象")
+    return cast(Dict[str, Any], payload)
+
+
 def _extract_gemini_text(payload: Dict[str, Any]) -> str:
     candidates = payload.get("candidates")
     if not isinstance(candidates, list):
@@ -705,6 +1078,30 @@ def _extract_gemini_text(payload: Dict[str, Any]) -> str:
     return ""
 
 
+def _extract_glm_text(payload: Dict[str, Any]) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
+        return ""
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, Mapping):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            content = content.strip()
+            if content:
+                return content
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, Mapping):
+                    text = part.get("text") or part.get("content")
+                    if isinstance(text, str) and text.strip():
+                        return text.strip()
+    return ""
+
+
 def _extract_news_section(text: str) -> str:
     if not text:
         return ""
@@ -720,7 +1117,7 @@ def _build_market_prompt(
     spec: _MarketNewsSpec,
     target_day: datetime,
     now_beijing: datetime,
-    settings: _GeminiSettings,
+    settings: _AiNewsSettings,
 ) -> str:
     target_iso = target_day.date().isoformat()
     target_cn = _format_cn_date(target_day.date())
@@ -738,35 +1135,42 @@ def _build_market_prompt(
     )
 
 
-def _fetch_gemini_market_news(
+def _fetch_ai_market_news(
     now_utc: datetime,
     api_keys: Dict[str, Any],
     logger: Optional[logging.Logger],
 ) -> Tuple[List[Dict[str, Any]], List[FetchStatus]]:
-    settings = _resolve_gemini_settings(api_keys)
+    settings = _resolve_ai_news_settings(api_keys)
     if settings is None:
         return (
             [],
             [
                 FetchStatus(
-                    name="gemini_news",
+                    name="ai_news",
                     ok=True,
-                    message="Gemini AI 未配置，跳过市场资讯",
+                    message="AI 市场资讯未配置，跳过摘要生成",
                 )
             ],
         )
 
     updates: List[Dict[str, Any]] = []
     statuses: List[FetchStatus] = []
+    provider_label = (
+        "GLM" if settings.provider == AI_NEWS_PROVIDER_GLM else "Gemini"
+    )
+    provider_meta = AI_NEWS_PROVIDER_META.get(
+        settings.provider,
+        {"source": settings.provider, "provider": settings.provider},
+    )
 
     if not settings.keys:
         return (
             updates,
             [
                 FetchStatus(
-                    name="gemini_news",
+                    name="ai_news",
                     ok=False,
-                    message="Gemini AI 未提供可用的 API key",
+                    message=f"{provider_label} 未提供可用的 API key",
                 )
             ],
         )
@@ -776,7 +1180,7 @@ def _fetch_gemini_market_news(
         key_queue.rotate(-random.randint(0, len(key_queue) - 1))
     beijing_now = now_utc.astimezone(CHINA_TZ)
 
-    for index, spec in enumerate(GEMINI_MARKET_SPECS):
+    for index, spec in enumerate(AI_NEWS_MARKET_SPECS):
         if index > 0 and not THROTTLE_DISABLED:
             lower, upper = GEMINI_INTER_MARKET_DELAY_RANGE
             delay = random.uniform(lower, upper)
@@ -784,9 +1188,9 @@ def _fetch_gemini_market_news(
         if not key_queue:
             statuses.append(
                 FetchStatus(
-                    name=f"gemini_news_{spec.market}",
+                    name=f"ai_news_{spec.market}",
                     ok=False,
-                    message="缺少 Gemini API key",
+                    message=f"{provider_label} API key 已耗尽",
                 )
             )
             continue
@@ -800,13 +1204,25 @@ def _fetch_gemini_market_news(
         for _ in range(len(key_queue)):
             label, token = key_queue[0]
             try:
-                payload = _call_gemini_generate_content(
-                    settings.model,
-                    token,
-                    prompt,
-                    settings.enable_network,
-                    settings.timeout,
-                )
+                if settings.provider == AI_NEWS_PROVIDER_GLM:
+                    payload = _call_glm_chat_completions(
+                        settings.model,
+                        token,
+                        prompt,
+                        settings.enable_network,
+                        settings.timeout,
+                        settings.thinking,
+                    )
+                    text = _extract_glm_text(payload)
+                else:
+                    payload = _call_gemini_generate_content(
+                        settings.model,
+                        token,
+                        prompt,
+                        settings.enable_network,
+                        settings.timeout,
+                    )
+                    text = _extract_gemini_text(payload)
             except requests.HTTPError as exc:
                 error_messages.append(f"{label}: HTTP {exc}")
                 key_queue.rotate(-1)
@@ -816,7 +1232,6 @@ def _fetch_gemini_market_news(
                 key_queue.rotate(-1)
                 continue
 
-            text = _extract_gemini_text(payload)
             if not text:
                 error_messages.append(f"{label}: 空响应")
                 key_queue.rotate(-1)
@@ -830,7 +1245,7 @@ def _fetch_gemini_market_news(
             detail = "；".join(error_messages[-3:]) if error_messages else "未知错误"
             statuses.append(
                 FetchStatus(
-                    name=f"gemini_news_{spec.market}",
+                    name=f"ai_news_{spec.market}",
                     ok=False,
                     message=f"{spec.label} 摘要生成失败（{detail}）",
                 )
@@ -841,7 +1256,7 @@ def _fetch_gemini_market_news(
         if not news_section:
             statuses.append(
                 FetchStatus(
-                    name=f"gemini_news_{spec.market}",
+                    name=f"ai_news_{spec.market}",
                     ok=False,
                     message=f"{spec.label} 响应缺少 <news> 内容",
                 )
@@ -859,8 +1274,8 @@ def _fetch_gemini_market_news(
             "market": spec.market,
             "date": target_day.date().isoformat(),
             "summary": summary,
-            "source": "gemini",
-            "provider": "google_gemini",
+            "source": provider_meta["source"],
+            "provider": provider_meta["provider"],
             "model": settings.model,
             "prompt_scope": spec.scope,
             "prompt_date": target_day.date().isoformat(),
@@ -870,7 +1285,7 @@ def _fetch_gemini_market_news(
         updates.append(update)
         statuses.append(
             FetchStatus(
-                name=f"gemini_news_{spec.market}",
+                name=f"ai_news_{spec.market}",
                 ok=True,
                 message=f"{spec.label} 摘要生成成功",
             )
@@ -879,12 +1294,22 @@ def _fetch_gemini_market_news(
             log(
                 logger,
                 logging.INFO,
-                "gemini_news_generated",
+                "ai_news_generated",
                 market=spec.market,
                 prompt_date=update["prompt_date"],
+                provider=settings.provider,
             )
 
     return updates, statuses
+
+
+def _fetch_gemini_market_news(
+    now_utc: datetime,
+    api_keys: Dict[str, Any],
+    logger: Optional[logging.Logger],
+) -> Tuple[List[Dict[str, Any]], List[FetchStatus]]:
+    """Backward compatible wrapper."""
+    return _fetch_ai_market_news(now_utc, api_keys, logger)
 
 
 def _load_configuration(
@@ -3499,12 +3924,12 @@ def run(argv: Optional[List[str]] = None) -> int:
             events.extend(ai_events)
             ai_updates.extend(ai_events)
 
-    gemini_updates, gemini_statuses = _fetch_gemini_market_news(
+    ai_news_updates, ai_news_statuses = _fetch_ai_market_news(
         datetime.now(timezone.utc), api_keys, logger
     )
-    statuses.extend(gemini_statuses)
-    if gemini_updates:
-        ai_updates.extend(gemini_updates)
+    statuses.extend(ai_news_statuses)
+    if ai_news_updates:
+        ai_updates.extend(ai_news_updates)
 
     arxiv_events, arxiv_status = _fetch_arxiv_events(arxiv_params, arxiv_throttle)
     statuses.append(arxiv_status)

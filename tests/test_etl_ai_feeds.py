@@ -233,11 +233,14 @@ def test_run_includes_ai_sources(tmp_path, monkeypatch, load_run_fetch):
     assert payload["ai_updates"][0]["title"] == "RSS Event"
 
 
-def test_fetch_gemini_market_news_generates_updates(monkeypatch, load_run_fetch):
+def test_fetch_ai_market_news_generates_updates_glm(
+    monkeypatch, load_run_fetch
+):
     module = load_run_fetch(
         {
             "ai_news": {
-                "model": "gemini-test",
+                "provider": "glm",
+                "model": "glm-4.6",
                 "keys": ["PRIMARY_TOKEN"],
                 "enable_network": False,
             }
@@ -245,32 +248,30 @@ def test_fetch_gemini_market_news_generates_updates(monkeypatch, load_run_fetch)
     )
     module.THROTTLE_DISABLED = True
 
-    def fake_call(model, api_key, prompt, enable_network, timeout):
-        assert model == "gemini-test"
+    def fake_call(model, api_key, prompt, enable_network, timeout, thinking):
+        assert model == "glm-4.6"
         assert api_key == "PRIMARY_TOKEN"
+        assert thinking == "enabled"
         assert "<news>" in prompt
         return {
-            "candidates": [
+            "choices": [
                 {
-                    "content": {
-                        "parts": [
-                            {
-                                "text": "<news>- 要点 A\n- 要点 B</news>",
-                            }
-                        ]
+                    "message": {
+                        "content": "<news>- 要点 A\n- 要点 B</news>",
                     }
                 }
             ]
         }
 
-    monkeypatch.setattr(module, "_call_gemini_generate_content", fake_call)
+    monkeypatch.setattr(module, "_call_glm_chat_completions", fake_call)
 
     now = datetime(2024, 4, 2, 10, 0, tzinfo=timezone.utc)
-    updates, statuses = module._fetch_gemini_market_news(
+    updates, statuses = module._fetch_ai_market_news(
         now,
         {
             "ai_news": {
-                "model": "gemini-test",
+                "provider": "glm",
+                "model": "glm-4.6",
                 "keys": ["PRIMARY_TOKEN"],
                 "enable_network": False,
             }
@@ -278,16 +279,17 @@ def test_fetch_gemini_market_news_generates_updates(monkeypatch, load_run_fetch)
         logger=None,
     )
 
-    assert len(updates) == len(module.GEMINI_MARKET_SPECS)
-    assert all(update["source"] == "gemini" for update in updates)
+    assert len(updates) == len(module.AI_NEWS_MARKET_SPECS)
+    assert all(update["source"] == "glm" for update in updates)
     assert all(update["summary"] for update in updates)
     assert all(status.ok for status in statuses)
 
 
-def test_fetch_gemini_market_news_rotates_keys(monkeypatch, load_run_fetch):
+def test_fetch_ai_market_news_rotates_keys_gemini(monkeypatch, load_run_fetch):
     module = load_run_fetch(
         {
             "ai_news": {
+                "provider": "gemini",
                 "model": "gemini-test",
                 "keys": ["PRIMARY_TOKEN", "BACKUP_TOKEN"],
                 "enable_network": False,
@@ -319,10 +321,11 @@ def test_fetch_gemini_market_news_rotates_keys(monkeypatch, load_run_fetch):
     monkeypatch.setattr(module, "_call_gemini_generate_content", fake_call)
 
     now = datetime(2024, 4, 3, 12, 0, tzinfo=timezone.utc)
-    updates, statuses = module._fetch_gemini_market_news(
+    updates, statuses = module._fetch_ai_market_news(
         now,
         {
             "ai_news": {
+                "provider": "gemini",
                 "model": "gemini-test",
                 "keys": ["PRIMARY_TOKEN", "BACKUP_TOKEN"],
                 "enable_network": False,
@@ -331,13 +334,13 @@ def test_fetch_gemini_market_news_rotates_keys(monkeypatch, load_run_fetch):
         logger=None,
     )
 
-    assert len(updates) == len(module.GEMINI_MARKET_SPECS)
+    assert len(updates) == len(module.AI_NEWS_MARKET_SPECS)
     assert call_counter["PRIMARY_TOKEN"] >= 1
-    assert call_counter["BACKUP_TOKEN"] >= len(module.GEMINI_MARKET_SPECS)
+    assert call_counter["BACKUP_TOKEN"] >= len(module.AI_NEWS_MARKET_SPECS)
     assert all(status.ok for status in statuses)
 
 
-def test_resolve_gemini_settings_env_fallback(monkeypatch, load_run_fetch):
+def test_resolve_ai_news_settings_env_fallback_gemini(monkeypatch, load_run_fetch):
     monkeypatch.delenv("API_KEYS", raising=False)
     monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-pro")
     monkeypatch.setenv("GEMINI_ENABLE_NETWORK", "true")
@@ -345,10 +348,28 @@ def test_resolve_gemini_settings_env_fallback(monkeypatch, load_run_fetch):
     monkeypatch.setenv("GEMINI_API_KEY_2", "ENV_KEY_B")
 
     module = load_run_fetch(None)
-    settings = module._resolve_gemini_settings(module.API_KEYS_CACHE)
+    settings = module._resolve_ai_news_settings(module.API_KEYS_CACHE)
 
     assert settings is not None
+    assert settings.provider == "gemini"
     assert settings.model == "gemini-2.5-pro"
     assert settings.enable_network is True
     tokens = {token for _, token in settings.keys}
     assert {"ENV_KEY_A", "ENV_KEY_B"} <= tokens
+
+
+def test_resolve_ai_news_settings_defaults_to_glm(monkeypatch, load_run_fetch):
+    monkeypatch.delenv("API_KEYS", raising=False)
+    monkeypatch.setenv("GLM_KEY_1", "GLM_KEY_PRIMARY")
+    monkeypatch.setenv("GLM_ENABLE_NETWORK", "0")
+
+    module = load_run_fetch(None)
+    settings = module._resolve_ai_news_settings(module.API_KEYS_CACHE)
+
+    assert settings is not None
+    assert settings.provider == "glm"
+    assert settings.model == "glm-4.6"
+    assert settings.enable_network is False
+    assert settings.thinking == "enabled"
+    tokens = {token for _, token in settings.keys}
+    assert "GLM_KEY_PRIMARY" in tokens

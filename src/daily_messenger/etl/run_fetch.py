@@ -2442,10 +2442,22 @@ EDGAR_ALLOWED_FORMS = {
     "6-K",
     "6-K/A",
 }
-EDGAR_USER_AGENT = os.getenv(
-    "EDGAR_USER_AGENT",
-    "DailyMessenger/0.1 (contact: [email protected])",
-)
+DEFAULT_EDGAR_USER_AGENT = "DailyMessenger/0.1 (contact: [email protected])"
+
+
+def _resolve_edgar_user_agent() -> str:
+    value = os.getenv("EDGAR_USER_AGENT")
+    if value is None:
+        return DEFAULT_EDGAR_USER_AGENT
+    trimmed = value.strip()
+    if not trimmed:
+        raise RuntimeError(
+            "EDGAR_USER_AGENT is empty; set a value like 'DailyMessenger/1.0 (contact: you@example.com)'"
+        )
+    return trimmed
+
+
+EDGAR_USER_AGENT = _resolve_edgar_user_agent()
 EDGAR_THROTTLE = 0.25
 
 

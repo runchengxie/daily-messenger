@@ -340,6 +340,14 @@ def test_fetch_ai_market_news_rotates_keys_gemini(monkeypatch, load_run_fetch):
     assert all(status.ok for status in statuses)
 
 
+def test_resolve_edgar_user_agent_raises_on_blank(monkeypatch, load_run_fetch):
+    module = load_run_fetch({})
+    monkeypatch.setenv("EDGAR_USER_AGENT", "   ")
+
+    with pytest.raises(RuntimeError):
+        module._resolve_edgar_user_agent()
+
+
 def test_resolve_ai_news_settings_env_fallback_gemini(monkeypatch, load_run_fetch):
     monkeypatch.delenv("API_KEYS", raising=False)
     monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-pro")

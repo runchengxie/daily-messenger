@@ -23,7 +23,18 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, cast
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    cast,
+)
 from urllib.parse import quote
 from xml.etree import ElementTree as ET
 
@@ -116,6 +127,7 @@ DEFAULT_GLM_TIMEOUT = 60.0
 DEFAULT_GLM_ENABLE_NETWORK = True
 DEFAULT_GLM_THINKING = "enabled"
 
+
 @dataclass
 class _AiNewsSettings:
     provider: str
@@ -125,6 +137,7 @@ class _AiNewsSettings:
     timeout: float
     extra_instructions: str = ""
     thinking: Optional[str] = None
+
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-pro"
 DEFAULT_GEMINI_TIMEOUT = 45.0
@@ -203,9 +216,7 @@ def _business_day_on_or_before(day: datetime) -> datetime:
     return candidate
 
 
-def _resolve_market_trading_date(
-    now_utc: datetime, spec: _MarketNewsSpec
-) -> datetime:
+def _resolve_market_trading_date(now_utc: datetime, spec: _MarketNewsSpec) -> datetime:
     local_now = now_utc.astimezone(spec.timezone)
     candidate = datetime(
         local_now.year,
@@ -248,8 +259,6 @@ class _QuoteSnapshot:
     close: float
     change_pct: float
     source: str
-
-
 
 
 def _ensure_out_dir() -> None:
@@ -523,7 +532,9 @@ def _merge_ai_news_env_config(data: Dict[str, Any], env: Mapping[str, str]) -> N
                 provider = entry.get("provider") or entry.get("vendor")
                 if isinstance(value, str):
                     return _coerce_str(value), (
-                        str(provider).strip().lower() if isinstance(provider, str) else None
+                        str(provider).strip().lower()
+                        if isinstance(provider, str)
+                        else None
                     )
             return None, None
 
@@ -584,9 +595,7 @@ def _merge_ai_news_env_config(data: Dict[str, Any], env: Mapping[str, str]) -> N
     if enable_general is not None:
         section["enable_network"] = _env_truthy(str(enable_general))
 
-    glm_enable_env = env.get("GLM_ENABLE_NETWORK") or env.get(
-        "ZHIPU_ENABLE_NETWORK"
-    )
+    glm_enable_env = env.get("GLM_ENABLE_NETWORK") or env.get("ZHIPU_ENABLE_NETWORK")
     if glm_enable_env is not None:
         section["glm_enable_network"] = _env_truthy(str(glm_enable_env))
 
@@ -627,7 +636,9 @@ def _merge_ai_news_env_config(data: Dict[str, Any], env: Mapping[str, str]) -> N
         data["ai_news"] = section
 
 
-def _collect_ai_news_keys(config: Dict[str, Any], provider: str) -> List[Tuple[str, str]]:
+def _collect_ai_news_keys(
+    config: Dict[str, Any], provider: str
+) -> List[Tuple[str, str]]:
     keys: List[Tuple[str, str]] = []
     seen: set[str] = set()
 
@@ -649,7 +660,9 @@ def _collect_ai_news_keys(config: Dict[str, Any], provider: str) -> List[Tuple[s
             if isinstance(entry, str):
                 token = entry
             elif isinstance(entry, Mapping):
-                entry_provider = str(entry.get("provider") or entry.get("vendor") or provider)
+                entry_provider = str(
+                    entry.get("provider") or entry.get("vendor") or provider
+                )
                 token = entry.get("value") or entry.get("key") or entry.get("api_key")
                 label = str(entry.get("label") or entry.get("name") or f"key_{idx}")
             else:
@@ -906,9 +919,7 @@ def _resolve_ai_news_settings(api_keys: Dict[str, Any]) -> Optional[_AiNewsSetti
     )
 
     thinking_candidate = (
-        section.get("thinking")
-        if provider == AI_NEWS_PROVIDER_GLM
-        else None
+        section.get("thinking") if provider == AI_NEWS_PROVIDER_GLM else None
     )
     if provider == AI_NEWS_PROVIDER_GLM and not thinking_candidate:
         thinking_candidate = section.get("glm_thinking")
@@ -943,6 +954,7 @@ def _resolve_ai_news_settings(api_keys: Dict[str, Any]) -> Optional[_AiNewsSetti
         extra_instructions=extra_instructions,
         thinking=thinking,
     )
+
 
 def _call_gemini_generate_content(
     model: str,
@@ -1122,13 +1134,17 @@ def _build_market_prompt(
     target_iso = target_day.date().isoformat()
     target_cn = _format_cn_date(target_day.date())
     now_cn = now_beijing.strftime("%Y年%m月%d日 %H:%M")
-    extra = f"\n{settings.extra_instructions.strip()}" if settings.extra_instructions else ""
+    extra = (
+        f"\n{settings.extra_instructions.strip()}"
+        if settings.extra_instructions
+        else ""
+    )
     return (
         f"今天的日期是北京时间 {now_cn}。"
         f"请联网搜索并总结 {target_cn}（交易日 {target_iso}）{spec.scope}的主要资讯。"
         "重点包括：核心指数或价格的收盘表现与涨跌幅、盘面主题或板块亮点、以及可能影响市场的重大公司事件或宏观新闻。"
         "如果查询结果显示该日期尚未结束或被视为未来时间，请自动回退到最近一个已经结束的交易日，并在摘要开头注明实际覆盖的日期与原因。"
-        "输出需要使用中文、保持客观中性语气；涉及新疆、香港、台湾等敏感议题时请遵循国内审核要求并避免额外延展。"
+        "输出需要使用中文、保持客观中性语气。"
         "请将完整内容放在单个 <news> 标签中，标签内使用 Markdown 列出 3-5 条重点，每条最好附带来源或链接。"
         "除 <news>...</news> 外不要输出其它文本。"
         f"{extra}"
@@ -1155,9 +1171,7 @@ def _fetch_ai_market_news(
 
     updates: List[Dict[str, Any]] = []
     statuses: List[FetchStatus] = []
-    provider_label = (
-        "GLM" if settings.provider == AI_NEWS_PROVIDER_GLM else "Gemini"
-    )
+    provider_label = "GLM" if settings.provider == AI_NEWS_PROVIDER_GLM else "Gemini"
     provider_meta = AI_NEWS_PROVIDER_META.get(
         settings.provider,
         {"source": settings.provider, "provider": settings.provider},
@@ -1264,9 +1278,7 @@ def _fetch_ai_market_news(
             continue
 
         summary_lines = [
-            line.rstrip()
-            for line in news_section.splitlines()
-            if line.strip()
+            line.rstrip() for line in news_section.splitlines() if line.strip()
         ]
         summary = "\n".join(summary_lines)
         update = {

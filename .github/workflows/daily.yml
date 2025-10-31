@@ -2,7 +2,7 @@ name: daily-digest
 
 on:
   schedule:
-    - cron: "0 14 * * 1-5"
+    - cron: "0 10 * * 1-5"   # 18:00 Asia/Shanghai
   workflow_dispatch:
 
 permissions:
@@ -116,16 +116,16 @@ jobs:
           git --no-pager diff --unified=0 -- README.md || true
           git checkout -- README.md
 
-      - name: Guard 07:00–07:10 PT window
+      - name: Guard 18:00–18:10 Asia/Shanghai window
         if: ${{ github.event_name == 'schedule' }}
         env:
-          TZ: America/Los_Angeles
-          WINDOW_START: "0700"
-          WINDOW_END: "0710"
+          TZ: Asia/Shanghai
+          WINDOW_START: "1800"
+          WINDOW_END: "1810"
         run: |
           now=$(TZ=$TZ date +%H%M)
           if [ "$now" -lt "$WINDOW_START" ] || [ "$now" -gt "$WINDOW_END" ]; then
-            echo "当前不在播报窗口，提前结束。"
+            echo "当前不在日报窗口（Asia/Shanghai 18:00–18:10），提前退出。"
             exit 0
           fi
 

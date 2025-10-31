@@ -16,7 +16,7 @@ API_KEYS='{}' uv run dm run --force-score
 # 常用旗标：--date YYYY-MM-DD, --force-fetch, --force-score, --degraded
 ```
 
-> 定时执行窗口：主日报 `daily-digest` 在工作日 UTC 14:00 触发，并校验是否处于 07:00–07:10 PT 播报窗口，超出即退出。BTC/XAU 监控工作流按照每小时与每 5 分钟计划触发，额外受 06:00–16:35 ET 守卫限制；详见下文工作流总览。
+> 定时执行窗口：主日报 `daily-digest` 在工作日 UTC 10:00 触发，并校验是否处于 18:00–18:10 Asia/Shanghai 播报窗口，超出即退出。BTC/XAU 监控工作流按照每小时与每 5 分钟计划触发，额外受 06:00–16:35 ET 守卫限制；详见下文工作流总览。
 >
 > Windows 提示：建议使用 WSL2；若直接在 PowerShell 下运行，可跳过 `.envrc`，改用 `setx` / `$env:VAR` 设置环境变量，再执行同样的 `uv` 命令。
 
@@ -30,9 +30,9 @@ API_KEYS='{}' uv run dm run --force-score
 
 ## 项目概览
 
-* 场景：为内部投研或舆情团队每天生成盘前情报。主日报工作流 `daily-digest` 仍在工作日 UTC 14:00 产出网页与卡片，BTC/XAU 监控工作流按小时与 5 分钟补充盘中快照（详见下文“GitHub Actions 工作流总览”）。
+* 场景：为内部投研或舆情团队每天生成盘前情报。主日报工作流 `daily-digest` 仍在工作日 UTC 10:00 产出网页与卡片，BTC/XAU 监控工作流按小时与 5 分钟补充盘中快照（详见下文“GitHub Actions 工作流总览”）。
 
-* 自动化触发：所有工作流均由 cron 与手动 `workflow_dispatch` 驱动，常规 `git push` 不会触发。日报链路受 07:00–07:10 PT 窗口保护，资产监控任务遵循 06:00–16:35 ET 守卫，超出窗口会立即退出且不会重排。
+* 自动化触发：所有工作流均由 cron 与手动 `workflow_dispatch` 驱动，常规 `git push` 不会触发。日报链路受 18:00–18:10 Asia/Shanghai 窗口保护，资产监控任务遵循 06:00–16:35 ET 守卫，超出窗口会立即退出且不会重排。
 
 * 语言与运行时：Python 3.11；默认使用 [uv](https://github.com/astral-sh/uv) 管理依赖和执行命令。
 
@@ -44,7 +44,7 @@ API_KEYS='{}' uv run dm run --force-score
 
 ```mermaid
 flowchart TD
-    A[定时触发<br/>工作日 UTC 14:00] --> B{本地时间在<br/>07:00–07:10 PT?}
+    A[定时触发<br/>工作日 UTC 10:00] --> B{本地时间在<br/>18:00–18:10 Asia/Shanghai?}
     B -- 否 --> X[退出作业<br/>非播报窗口]
     B -- 是 --> C[Checkout 代码<br/>Setup Python / 安装 uv]
     C --> D[uv sync --locked --no-dev<br/>同步依赖]
@@ -72,7 +72,7 @@ flowchart TD
 
 | Workflow | Cron (UTC) | 守卫窗口 | 主要产物 | 飞书频道 |
 | -------- | ---------- | -------- | -------- | -------- |
-| `daily-digest` | `0 14 * * 1-5` | 07:00–07:10 PT | `out/index.html`, `out/digest_card.json` | `daily` |
+| `daily-digest` | `0 10 * * 1-5` | 18:00–18:10 Asia/Shanghai | `out/index.html`, `out/digest_card.json` | `daily` |
 | `btc-d` | `0 14 * * 1-5` | 07:00–07:10 PT | `out/btc_report_daily.md` | `daily` |
 | `btc-h1` | `2 * * * 1-5` | 06:00–16:35 ET | `out/btc_report_h1.md` | `alerts` |
 | `btc-m1` | `2-59/5 * * * 1-5` | 06:00–16:35 ET | `out/btc_report_m1.md` | `alerts` |
@@ -80,7 +80,7 @@ flowchart TD
 | `xau-h1` | `2 * * * 1-5` | 06:00–16:35 ET | `out/xau_report_h1.md` | `alerts` |
 | `xau-m5` | `2-59/5 * * * 1-5` | 06:00–16:35 ET | `out/xau_report_m5.md` | `alerts` |
 
-> 说明：资产监控工作流使用 `concurrency` 互斥，窗口外立即退出以避免无意义调用；`btc-d` 与主日报共享 07:00–07:10 PT 播报窗口，其余 BTC/XAU 任务均限定在纽市 06:00–16:35 ET。
+> 说明：资产监控工作流使用 `concurrency` 互斥，窗口外立即退出以避免无意义调用；主日报守卫在 18:00–18:10 Asia/Shanghai，`btc-d` 仍使用 07:00–07:10 PT 播报窗口，其余 BTC/XAU 任务均限定在纽市 06:00–16:35 ET。
 
 ```mermaid
 flowchart LR
@@ -613,7 +613,7 @@ uv run dm btc report --config config/ta_btc_m1.yml --out out/btc_report_m1.md
 
 3. 检查当前 shell 是否注入了 `API_KEYS` / `API_KEYS_PATH` 及浏览器链路变量。
 
-4. 对照本地时间是否落在 07:00–07:10 PT 播报窗口（CI 同样受限）。
+4. 对照本地时间是否落在 18:00–18:10 Asia/Shanghai 播报窗口（CI 同样受限）。
 
 5. Playwright/ETF 场景：确认 `FARSIDE_COOKIES`、`FARSIDE_UA`、`EDGAR_USER_AGENT` 是否就绪，必要时重新抓取。
 
@@ -659,7 +659,7 @@ uv run ruff check .  # 可加 --fix 自动修复
 
 * 日报：`.github/workflows/daily.yml`。
 
-  * 工作日 UTC 14:00 触发，若当前时间不在 07:00–07:10 PT 窗口内即提前结束（以 README 约定为准）。
+  * 工作日 UTC 10:00 触发，若当前时间不在 18:00–18:10 Asia/Shanghai 窗口内即提前结束（以 README 约定为准）。
 
   * 所有步骤使用 `uv sync --locked --no-dev` 与 `uv run`，保证与本地一致的 Python 3.11 环境。
 

@@ -39,7 +39,7 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
         ],
         axis=1,
     ).max(axis=1)
-    return tr.rolling(window=period).mean()
+    return tr.rolling(window=period, min_periods=1).mean()
 
 
 def pivots(h, l, c):
@@ -74,6 +74,16 @@ def _load_config(path: Path) -> dict:
         return yaml.safe_load(f) or {}
 
 
+def _fmt(value, *, nd: int = 2, na_text: str = "—") -> str:
+    try:
+        val = float(value)
+    except (TypeError, ValueError):
+        return na_text
+    if not np.isfinite(val):
+        return na_text
+    return f"{val:.{nd}f}"
+
+
 def build_report(
     *,
     datadir: Path = DEFAULT_DATA_DIR,
@@ -98,36 +108,44 @@ def build_report(
         intraday_granularities = {str(gran).upper() for gran in intraday_grans_raw}
 
     # Compute technical indicators used in the report.
-    d1["SMA50"] = d1["close"].rolling(50).mean()
-    d1["SMA200"] = d1["close"].rolling(200).mean()
+    d1["SMA50"] = d1["close"].rolling(50, min_periods=1).mean()
+    d1["SMA200"] = d1["close"].rolling(200, min_periods=1).mean()
     d1["RSI14"] = rsi(d1["close"], 14)
     d1["ATR14"] = atr(d1, 14)
     last = d1.iloc[-1]
 
-    pp, r1, s1, r2, s2, r3, s3 = pivots(d1["high"].iloc[-2], d1["low"].iloc[-2], d1["close"].iloc[-2])
-
     lines = []
     lines.append(f"# {title}\n")
-    lines.append(
-        f"**收盘价**: {last['close']:.2f}  |  **SMA50**: {last['SMA50']:.2f}  |  **SMA200**: {last['SMA200']:.2f}\n"
-    )
-    sma_state = "上穿" if last["SMA50"] > last["SMA200"] else "下穿或未上穿"
+    lines.append(f"**收盘价**: {_fmt(last['close'])}  |  **SMA50**: {_fmt(last['SMA50'])}  |  **SMA200**: {_fmt(last['SMA200'])}\n")
+    if np.isfinite(last["SMA50"]) and np.isfinite(last["SMA200"]):
+        sma_state = "上穿" if last["SMA50"] > last["SMA200"] else "下穿或未上穿"
+    else:
+        sma_state = "数据不足，暂未形成均线信号"
     lines.append(f"**均线关系**: SMA50 相对 SMA200 为 {sma_state}\n")
-    lines.append(f"**RSI14**: {last['RSI14']:.1f}  |  **ATR14**: {last['ATR14']:.2f}\n")
+    lines.append(f"**RSI14**: {_fmt(last['RSI14'], nd=1)}  |  **ATR14**: {_fmt(last['ATR14'])}\n")
 
     lines.append("\n## 枢轴位 (基于昨日)\n")
-    lines.append(f"PP: {pp:.2f} | R1: {r1:.2f} | S1: {s1:.2f} | R2: {r2:.2f} | S2: {s2:.2f} | R3: {r3:.2f} | S3: {s3:.2f}\n")
+    if len(d1) >= 2:
+        prev = d1.iloc[-2]
+        pp, r1, s1, r2, s2, r3, s3 = pivots(prev["high"], prev["low"], prev["close"])
+        lines.append(
+            f"PP: {_fmt(pp)} | R1: {_fmt(r1)} | S1: {_fmt(s1)} | R2: {_fmt(r2)} | S2: {_fmt(s2)} | R3: {_fmt(r3)} | S3: {_fmt(s3)}\n"
+        )
+    else:
+        lines.append("历史不足，暂无法计算枢轴位。\n")
 
     if include_intraday and "H1" in intraday_granularities and not h1.empty:
         h_last = h1.iloc[-1]
         lines.append("\n## 小时级快照\n")
-        lines.append(f"1h 收盘: {h_last['close']:.2f}; 近 24 根均价: {h1['close'].tail(24).mean():.2f}\n")
+        lines.append(
+            f"1h 收盘: {_fmt(h_last['close'])}; 近 24 根均价: {_fmt(h1['close'].tail(24).mean())}\n"
+        )
 
     if include_intraday and {"M1", "1M"}.intersection(intraday_granularities) and not m1.empty:
         m_last = m1.iloc[-1]
         m1["RSI14"] = rsi(m1["close"], 14)
         lines.append("\n## 分钟级快照\n")
-        lines.append(f"1m 最新: {m_last['close']:.2f}; 1m RSI14: {m1['RSI14'].iloc[-1]:.1f}\n")
+        lines.append(f"1m 最新: {_fmt(m_last['close'])}; 1m RSI14: {_fmt(m1['RSI14'].iloc[-1], nd=1)}\n")
 
     md = "\n".join(lines)
     outpath.parent.mkdir(parents=True, exist_ok=True)

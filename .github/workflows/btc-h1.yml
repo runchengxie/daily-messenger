@@ -36,6 +36,18 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked --no-dev || uv sync --no-dev
 
+      - name: Prepare BTC data dir
+        run: mkdir -p out/btc
+
+      - name: Restore BTC klines cache
+        uses: actions/cache/restore@v4
+        with:
+          path: out/btc
+          key: btc-klines-${{ runner.os }}-${{ github.ref_name }}
+          restore-keys: |
+            btc-klines-${{ runner.os }}-${{ github.ref_name }}-
+            btc-klines-${{ runner.os }}-
+
       - name: Guard trading window
         if: ${{ github.event_name == 'schedule' }}
         env:
@@ -49,10 +61,27 @@ jobs:
             exit 0
           fi
 
-      - name: Ensure BTC 日线缓存存在
+      - name: Ensure BTC 1d history (>=260 bars)
         run: |
-          if [ ! -f out/btc/klines_1d.parquet ]; then
-            uv run dm btc fetch --interval 1d --lookback 10d
+          python - <<'PY'
+import sys
+from pathlib import Path
+import pandas as pd
+path = Path("out/btc/klines_1d.parquet")
+if path.exists():
+    try:
+        df = pd.read_parquet(path)
+    except Exception as exc:  # noqa: BLE001
+        print(f"读取 {path} 失败: {exc}")
+    else:
+        if len(df) >= 260:
+            print("现有 1d 历史满足需求（>=260 条），跳过刷新。")
+            sys.exit(1)
+print("1d 历史不足，执行回填。")
+sys.exit(0)
+PY
+          if [ $? -eq 0 ]; then
+            uv run dm btc fetch --interval 1d --lookback 400d
           fi
 
       - name: Refresh BTC 1h data
@@ -63,6 +92,13 @@ jobs:
           uv run dm btc report \
             --config config/ta_btc_h1.yml \
             --out out/btc_report_h1.md
+
+      - name: Save BTC klines cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: out/btc
+          key: btc-klines-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Push Feishu alerts
         if: ${{ env.FEISHU_WEBHOOK_ALERTS != '' }}

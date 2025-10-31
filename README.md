@@ -73,14 +73,14 @@ flowchart TD
 | Workflow | Cron (UTC) | 守卫窗口 | 主要产物 | 飞书频道 |
 | -------- | ---------- | -------- | -------- | -------- |
 | `daily-digest` | `0 10 * * 1-5` | 18:00–18:10 Asia/Shanghai | `out/index.html`, `out/digest_card.json` | `daily` |
-| `btc-d` | `0 14 * * 1-5` | 07:00–07:10 PT | `out/btc_report_daily.md` | `daily` |
+| `btc-d` | `0 10 * * 1-5` | 18:00–18:10 Asia/Shanghai | `out/btc_report_daily.md` | `daily` |
 | `btc-h1` | `2 * * * 1-5` | 06:00–16:35 ET | `out/btc_report_h1.md` | `alerts` |
 | `btc-m1` | `2-59/5 * * * 1-5` | 06:00–16:35 ET | `out/btc_report_m1.md` | `alerts` |
-| `xau-d` | `0 14 * * 1-5` | 06:00–16:35 ET | `out/xau_report_daily.md` | `daily` |
+| `xau-d` | `0 10 * * 1-5` | 18:00–18:10 Asia/Shanghai | `out/xau_report_daily.md` | `daily` |
 | `xau-h1` | `2 * * * 1-5` | 06:00–16:35 ET | `out/xau_report_h1.md` | `alerts` |
 | `xau-m5` | `2-59/5 * * * 1-5` | 06:00–16:35 ET | `out/xau_report_m5.md` | `alerts` |
 
-> 说明：资产监控工作流使用 `concurrency` 互斥，窗口外立即退出以避免无意义调用；主日报守卫在 18:00–18:10 Asia/Shanghai，`btc-d` 仍使用 07:00–07:10 PT 播报窗口，其余 BTC/XAU 任务均限定在纽市 06:00–16:35 ET。
+> 说明：资产监控工作流使用 `concurrency` 互斥，窗口外立即退出以避免无意义调用；主日报、`btc-d` 与 `xau-d` 守卫在 18:00–18:10 Asia/Shanghai，其余 BTC/XAU 任务遵循纽市 06:00–16:35 ET 限制。
 
 ```mermaid
 flowchart LR
@@ -567,9 +567,9 @@ uv run python -m daily_messenger.digest.ta_report --config config/ta_xau_m5.yml 
 
 对应的 GitHub Actions：
 
-* `xau-d`：工作日 UTC 14:00 触发，受 06:00–16:35 ET 守卫限制，向 `daily` 频道发送 `out/xau_report_daily.md`。
-* `xau-h1`：每小时 :02 执行，窗口守卫同上，仅生成小时级 Markdown 并推送 `alerts`。
-* `xau-m5`：交易时段内每 5 分钟 :02 执行，产出 `out/xau_report_m5.md` 并推送 `alerts`。
+* `xau-d`：工作日 UTC 10:00 触发，受 18:00–18:10 Asia/Shanghai 守卫约束，向 `daily` 频道发送 `out/xau_report_daily.md`。
+* `xau-h1`：每小时 :02 执行，仍受 06:00–16:35 ET 守卫，仅生成小时级 Markdown 并推送 `alerts`。
+* `xau-m5`：交易时段内每 5 分钟 :02 执行，沿用 06:00–16:35 ET 限制，产出 `out/xau_report_m5.md` 并推送 `alerts`。
 
 提示：OANDA 返回的 volume 是 tick 计数，适用于波动度评估，不等同于交易所成交量。生产环境请根据需要替换为正式实时数据源。
 
@@ -578,7 +578,7 @@ uv run python -m daily_messenger.digest.ta_report --config config/ta_xau_m5.yml 
 BTC 技术面报告使用 `dm btc` 子命令维护 1m/1h/1d K 线并生成 Markdown 摘要，可配合不同配置文件产出日报与盘中快照。
 
 ```bash
-uv run dm btc fetch --interval 1d --lookback 10d
+uv run dm btc fetch --interval 1d --lookback 400d
 uv run dm btc report --config config/ta_btc_daily.yml --out out/btc_report_daily.md
 uv run dm btc fetch --interval 1h --lookback 5d
 uv run dm btc report --config config/ta_btc_h1.yml --out out/btc_report_h1.md
@@ -588,10 +588,11 @@ uv run dm btc report --config config/ta_btc_m1.yml --out out/btc_report_m1.md
 
 * 抓取器按 Binance → Kraken → Bitstamp 顺序回退，写入 `out/btc/klines_<interval>.parquet` 并记录降级状态。
 * 报告默认计算 SMA50/200、RSI14、ATR14 与枢轴位，可通过 `config/ta_btc.yml` 或上述专用配置调整标题、是否包含 H1/M1 段落。
+* GitHub Actions 使用缓存复用 `out/btc`，若检测到日线不足 260 条会自动回填近 400 天历史，确保均线与波动指标稳定。冷启动调试可执行 `uv run dm btc init-history --interval 1d --start 2020-01-01 --end 2024-01-01` 先行预热。
 
 对应的 GitHub Actions：
 
-* `btc-d`：工作日 UTC 14:00（07:00–07:10 PT 窗口内）刷新 1d 数据并输出 `out/btc_report_daily.md`，推送至 `daily`。
+* `btc-d`：工作日 UTC 10:00（18:00–18:10 Asia/Shanghai 窗口内）刷新 1d 数据并输出 `out/btc_report_daily.md`，推送至 `daily`。
 * `btc-h1`：每小时 :02 触发，仅刷新 1h K 线并生成 `out/btc_report_h1.md`，推送至 `alerts`。
 * `btc-m1`：交易时段内每 5 分钟 :02 触发，刷新 1m 数据后生成 `out/btc_report_m1.md` 并推送 `alerts`。
 
@@ -671,7 +672,7 @@ uv run ruff check .  # 可加 --fix 自动修复
 
 * BTC 监控：`.github/workflows/btc-d.yml`、`.github/workflows/btc-h1.yml`、`.github/workflows/btc-m1.yml`。
 
-  * `btc-d`：工作日 UTC 14:00 触发，继承 07:00–07:10 PT 守卫，仅刷新 1d K 线并推送 `out/btc_report_daily.md` 至 `daily`。
+  * `btc-d`：工作日 UTC 10:00 触发，守卫在 18:00–18:10 Asia/Shanghai，仅刷新 1d K 线并推送 `out/btc_report_daily.md` 至 `daily`。
 
   * `btc-h1`：每小时 :02 运行，受 06:00–16:35 ET 限制；若缺少日线缓存会先补拉一次，然后刷新 1h 数据并推送 `out/btc_report_h1.md` 至 `alerts`。
 
@@ -679,7 +680,9 @@ uv run ruff check .  # 可加 --fix 自动修复
 
 * 黄金监控：`.github/workflows/xau-d.yml`、`.github/workflows/xau-h1.yml`、`.github/workflows/xau-m5.yml`。
 
-  * 三条工作流共享 06:00–16:35 ET 守卫，分别生成 `out/xau_report_daily.md`（`daily`）、`out/xau_report_h1.md`（`alerts`）、`out/xau_report_m5.md`（`alerts`）。
+  * `xau-d`：工作日 UTC 10:00 触发，守卫在 18:00–18:10 Asia/Shanghai，生成 `out/xau_report_daily.md` 并推送 `daily`。
+
+  * `xau-h1` 与 `xau-m5`：保持 06:00–16:35 ET 守卫，分别产出小时与 5 分钟快照并推送 `alerts`。
 
   * 全部使用 `concurrency` 在同一窗口内互斥执行，避免 cron 重叠造成排队。
 

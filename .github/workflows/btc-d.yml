@@ -2,7 +2,7 @@ name: btc-d
 
 on:
   schedule:
-    - cron: "0 14 * * 1-5"
+    - cron: "0 10 * * 1-5"   # 18:00 Asia/Shanghai
   workflow_dispatch:
 
 permissions:
@@ -36,27 +36,46 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked --no-dev || uv sync --no-dev
 
-      - name: Guard 07:00–07:10 PT window
+      - name: Prepare BTC data dir
+        run: mkdir -p out/btc
+
+      - name: Restore BTC klines cache
+        uses: actions/cache/restore@v4
+        with:
+          path: out/btc
+          key: btc-klines-${{ runner.os }}-${{ github.ref_name }}
+          restore-keys: |
+            btc-klines-${{ runner.os }}-${{ github.ref_name }}-
+            btc-klines-${{ runner.os }}-
+
+      - name: Guard 18:00–18:10 Asia/Shanghai window
         if: ${{ github.event_name == 'schedule' }}
         env:
-          TZ: America/Los_Angeles
-          WINDOW_START: "0700"
-          WINDOW_END: "0710"
+          TZ: Asia/Shanghai
+          WINDOW_START: "1800"
+          WINDOW_END: "1810"
         run: |
           now=$(TZ=$TZ date +%H%M)
           if [ "$now" -lt "$WINDOW_START" ] || [ "$now" -gt "$WINDOW_END" ]; then
-            echo "当前不在 BTC 日报窗口，提前退出。"
+            echo "当前不在 BTC 日报窗口（Asia/Shanghai 18:00–18:10），提前退出。"
             exit 0
           fi
 
-      - name: Refresh BTC 1d data
-        run: uv run dm btc fetch --interval 1d --lookback 10d
+      - name: Refresh BTC 1d data (>=260 bars)
+        run: uv run dm btc fetch --interval 1d --lookback 400d
 
       - name: Generate BTC daily report
         run: |
           uv run dm btc report \
             --config config/ta_btc_daily.yml \
             --out out/btc_report_daily.md
+
+      - name: Save BTC klines cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: out/btc
+          key: btc-klines-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Push Feishu daily channel
         if: ${{ env.FEISHU_WEBHOOK_DAILY != '' }}

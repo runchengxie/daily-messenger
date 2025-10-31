@@ -2,7 +2,7 @@ name: xau-d
 
 on:
   schedule:
-    - cron: "0 14 * * 1-5"
+    - cron: "0 10 * * 1-5"   # 18:00 Asia/Shanghai
   workflow_dispatch:
 
 permissions:
@@ -37,16 +37,16 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked --no-dev || uv sync --no-dev
 
-      - name: Guard trading window
+      - name: Guard 18:00–18:10 Asia/Shanghai window
         if: ${{ github.event_name == 'schedule' }}
         env:
-          TZ: America/New_York
-          WINDOW_START: "0600"
-          WINDOW_END: "1635"
+          TZ: Asia/Shanghai
+          WINDOW_START: "1800"
+          WINDOW_END: "1810"
         run: |
           now=$(TZ=$TZ date +%H%M)
           if [ "$now" -lt "$WINDOW_START" ] || [ "$now" -gt "$WINDOW_END" ]; then
-            echo "当前不在黄金播报窗口，提前退出。"
+            echo "当前不在黄金日报窗口（Asia/Shanghai 18:00–18:10），提前退出。"
             exit 0
           fi
 
